@@ -13,6 +13,7 @@ import SampleProtocol from './contract/protocol.js';
 import SampleContract from './contract/contract.js';
 import { Timer } from './features/timer/index.js';
 import Sidechannel from './features/sidechannel/index.js';
+import ScBridge from './features/sc-bridge/index.js';
 
 const { env, storeLabel, flags } = getPearRuntime();
 
@@ -86,6 +87,44 @@ const subnetBootstrapHex =
   (flags['subnet-bootstrap'] && String(flags['subnet-bootstrap'])) ||
   env.SUBNET_BOOTSTRAP ||
   null;
+
+const scBridgeEnabledRaw =
+  (flags['sc-bridge'] && String(flags['sc-bridge'])) ||
+  env.SC_BRIDGE ||
+  '';
+const scBridgeEnabled = parseBool(scBridgeEnabledRaw, false);
+const scBridgeHost =
+  (flags['sc-bridge-host'] && String(flags['sc-bridge-host'])) ||
+  env.SC_BRIDGE_HOST ||
+  '127.0.0.1';
+const scBridgePortRaw =
+  (flags['sc-bridge-port'] && String(flags['sc-bridge-port'])) ||
+  env.SC_BRIDGE_PORT ||
+  '';
+const scBridgePort = Number.parseInt(scBridgePortRaw, 10);
+const scBridgeFilter =
+  (flags['sc-bridge-filter'] && String(flags['sc-bridge-filter'])) ||
+  env.SC_BRIDGE_FILTER ||
+  '';
+const scBridgeFilterChannelRaw =
+  (flags['sc-bridge-filter-channel'] && String(flags['sc-bridge-filter-channel'])) ||
+  env.SC_BRIDGE_FILTER_CHANNEL ||
+  '';
+const scBridgeFilterChannels = scBridgeFilterChannelRaw
+  ? scBridgeFilterChannelRaw
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+  : null;
+const scBridgeToken =
+  (flags['sc-bridge-token'] && String(flags['sc-bridge-token'])) ||
+  env.SC_BRIDGE_TOKEN ||
+  '';
+const scBridgeDebugRaw =
+  (flags['sc-bridge-debug'] && String(flags['sc-bridge-debug'])) ||
+  env.SC_BRIDGE_DEBUG ||
+  '';
+const scBridgeDebug = parseBool(scBridgeDebugRaw, false);
 
 const readHexFile = (filePath, byteLength) => {
   try {
@@ -175,7 +214,7 @@ if (!subnetBootstrap) {
 }
 
 console.log('');
-console.log('==================== CONTRACT-TEST-LATEST ====================');
+console.log('====================INTERCOM ====================');
 console.log('MSB network bootstrap:', msbBootstrapHex);
 console.log('MSB channel:', b4a.toString(msbConfig.channel, 'utf8'));
 console.log('MSB store:', path.join(msbStoresDirectory, msbStoreName));
@@ -189,6 +228,10 @@ console.log('Sidechannel entry:', sidechannelEntry);
 if (sidechannelExtras.length > 0) {
   console.log('Sidechannel extras:', sidechannelExtras.join(', '));
 }
+if (scBridgeEnabled) {
+  const portDisplay = Number.isSafeInteger(scBridgePort) ? scBridgePort : 49222;
+  console.log('SC-Bridge:', `ws://${scBridgeHost}:${portDisplay}`);
+}
 console.log('================================================================');
 console.log('');
 
@@ -199,6 +242,18 @@ if (admin && admin.value === peer.wallet.publicKey && peer.base.writable) {
   timer.start().catch((err) => console.error('Timer feature stopped:', err?.message ?? err));
 }
 
+let scBridge = null;
+if (scBridgeEnabled) {
+  scBridge = new ScBridge(peer, {
+    host: scBridgeHost,
+    port: Number.isSafeInteger(scBridgePort) ? scBridgePort : 49222,
+    filter: scBridgeFilter,
+    filterChannels: scBridgeFilterChannels || undefined,
+    token: scBridgeToken,
+    debug: scBridgeDebug,
+  });
+}
+
 const sidechannel = new Sidechannel(peer, {
   channels: [sidechannelEntry, ...sidechannelExtras],
   debug: sidechannelDebug,
@@ -206,9 +261,18 @@ const sidechannel = new Sidechannel(peer, {
   entryChannel: sidechannelEntry,
   allowRemoteOpen: sidechannelAllowRemoteOpen,
   autoJoinOnOpen: sidechannelAutoJoin,
+  onMessage: scBridgeEnabled
+    ? (channel, payload, connection) => scBridge.handleSidechannelMessage(channel, payload, connection)
+    : null,
 });
 await sidechannel.start();
 peer.sidechannel = sidechannel;
+
+if (scBridge) {
+  scBridge.attachSidechannel(sidechannel);
+  scBridge.start();
+  peer.scBridge = scBridge;
+}
 
 const terminal = new Terminal(peer);
 await terminal.start();

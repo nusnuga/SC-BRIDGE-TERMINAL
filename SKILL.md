@@ -143,6 +143,15 @@ Sidechannels:
 - `--sidechannel-allow-remote-open 0|1` : accept/reject `/sc_open` requests.
 - `--sidechannel-auto-join 0|1` : auto‑join requested channels.
 
+SC-Bridge (WebSocket):
+- `--sc-bridge 1` : enable WebSocket bridge for sidechannels.
+- `--sc-bridge-host <host>` : bind host (default `127.0.0.1`).
+- `--sc-bridge-port <port>` : bind port (default **49222**).
+- `--sc-bridge-token <token>` : optional auth token (clients must send `{ "type": "auth", "token": "..." }` first).
+- `--sc-bridge-filter "<expr>"` : default word filter for WS clients (see filter syntax below).
+- `--sc-bridge-filter-channel "chan1,chan2"` : apply filters only to these channels (others pass through).
+- `--sc-bridge-debug 1` : verbose SC‑Bridge logs.
+
 ## Dynamic Channel Opening
 Agents can request new channels dynamically in the entry channel. This enables coordinated channel creation without out‑of‑band setup.
 - Use `/sc_open --channel "<name>" [--via "<channel>"]` to request a new channel.
@@ -198,6 +207,28 @@ Intercom must expose and describe all interactive commands so agents can operate
 - **Message size guard** defaults to 1,000,000 bytes (JSON‑encoded payload).
 - **Diagnostics:** use `--sidechannel-debug 1` and `/sc_stats` to confirm connection counts and message flow.
 - **Dynamic channel requests**: `/sc_open` posts a request in the entry channel; you can auto‑join with `--sidechannel-auto-join 1`.
+
+## SC‑Bridge (WebSocket) Protocol
+SC‑Bridge exposes sidechannel messages over WebSocket and accepts inbound commands.
+
+**Filter syntax**
+- `alpha+beta|gamma` means **(alpha AND beta) OR gamma**.
+- Filters are case‑insensitive and applied to the message text (stringified when needed).
+- If `--sc-bridge-filter-channel` is set, filtering applies only to those channels.
+
+**Server → Client**
+- `hello` : `{ type, peer, address, entryChannel, filter, requiresAuth }`
+- `sidechannel_message` : `{ type, channel, from, id, ts, message, relayedBy?, ttl? }`
+- `sent`, `joined`, `open_requested`, `filter_set`, `auth_ok`, `error`
+
+**Client → Server**
+- `auth` : `{ type:"auth", token:"..." }`
+- `send` : `{ type:"send", channel:"...", message:any }`
+- `join` : `{ type:"join", channel:"..." }`
+- `open` : `{ type:"open", channel:"...", via?: "..." }`
+- `set_filter` / `clear_filter`
+- `subscribe` / `unsubscribe` (optional per‑client channel filter)
+- `ping`
 
 ## Contracts, Features, and Transactions
 - **Chat** and **Features** are **non‑transactional** operations (no MSB fee).
