@@ -79,6 +79,18 @@ This repo also provides dev-oriented role scripts:
 - `scripts/run-swap-maker.sh`, `scripts/run-swap-maker.ps1`
 - `scripts/run-swap-taker.sh`, `scripts/run-swap-taker.ps1`
 
+This repo also provides long-running OTC “agent bots” that sit in an OTC channel, negotiate, and then hand off into a per-trade invite-only `swap:<id>` channel:
+- `scripts/otc-maker.mjs`: listens for `swap.rfq`, replies with `swap.quote`, and on `swap.quote_accept` sends a `swap.swap_invite` (welcome+invite) and joins the `swap:<id>` channel.
+- `scripts/otc-taker.mjs`: sends a `swap.rfq`, waits for a `swap.quote`, sends `swap.quote_accept`, waits for `swap.swap_invite`, then joins the `swap:<id>` channel.
+
+These bots are designed for:
+- unattended end-to-end tests (`--once`)
+- “sit in channel all day” operation (default: run forever)
+
+To avoid copy/pasting SC-Bridge URLs/tokens for the bots, use:
+- `scripts/otc-maker-peer.sh`, `scripts/otc-maker-peer.ps1`
+- `scripts/otc-taker-peer.sh`, `scripts/otc-taker-peer.ps1`
+
 To avoid copy/pasting SC-Bridge URLs/tokens, use the wrappers that read the token from `onchain/sc-bridge/<store>.token`:
 - `scripts/swapctl-peer.sh <storeName> <scBridgePort> ...`
 - `scripts/swapctl-peer.ps1 <storeName> <scBridgePort> ...`
