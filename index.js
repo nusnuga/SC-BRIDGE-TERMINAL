@@ -139,6 +139,11 @@ const sidechannelDebugRaw =
   env.SIDECHANNEL_DEBUG ||
   '';
 const sidechannelDebug = parseBool(sidechannelDebugRaw, false);
+const sidechannelQuietRaw =
+  (flags['sidechannel-quiet'] && String(flags['sidechannel-quiet'])) ||
+  env.SIDECHANNEL_QUIET ||
+  '';
+const sidechannelQuiet = parseBool(sidechannelQuietRaw, false);
 const sidechannelMaxBytesRaw =
   (flags['sidechannel-max-bytes'] && String(flags['sidechannel-max-bytes'])) ||
   env.SIDECHANNEL_MAX_BYTES ||
@@ -194,6 +199,7 @@ const sidechannelInviteChannels = sidechannelInviteChannelsRaw
       .map((value) => value.trim())
       .filter((value) => value.length > 0)
   : null;
+
 const sidechannelInvitePrefixesRaw =
   (flags['sidechannel-invite-prefixes'] && String(flags['sidechannel-invite-prefixes'])) ||
   env.SIDECHANNEL_INVITE_PREFIXES ||
@@ -204,6 +210,7 @@ const sidechannelInvitePrefixes = sidechannelInvitePrefixesRaw
       .map((value) => value.trim())
       .filter((value) => value.length > 0)
   : null;
+
 const sidechannelInviterKeysRaw =
   (flags['sidechannel-inviter-keys'] && String(flags['sidechannel-inviter-keys'])) ||
   env.SIDECHANNEL_INVITER_KEYS ||
@@ -243,6 +250,7 @@ const sidechannelDefaultOwner = sidechannelDefaultOwnerRaw
 if (sidechannelDefaultOwner && !/^[0-9a-f]{64}$/.test(sidechannelDefaultOwner)) {
   throw new Error('Invalid --sidechannel-default-owner. Provide 32-byte hex (64 chars).');
 }
+
 const sidechannelOwnerWriteOnlyRaw =
   (flags['sidechannel-owner-write-only'] && String(flags['sidechannel-owner-write-only'])) ||
   env.SIDECHANNEL_OWNER_WRITE_ONLY ||
@@ -531,9 +539,13 @@ const sidechannel = new Sidechannel(peer, {
   ownerKeys: sidechannelOwnerMap.size > 0 ? sidechannelOwnerMap : undefined,
   defaultOwnerKey: sidechannelDefaultOwner || undefined,
   welcomeByChannel: sidechannelWelcomeMap.size > 0 ? sidechannelWelcomeMap : undefined,
+  defaultOwnerKey: sidechannelDefaultOwner || undefined,
+  welcomeByChannel: sidechannelWelcomeMap.size > 0 ? sidechannelWelcomeMap : undefined,
   onMessage: scBridgeEnabled
     ? (channel, payload, connection) => scBridge.handleSidechannelMessage(channel, payload, connection)
-    : null,
+    : sidechannelQuiet
+      ? () => {}
+      : null,
 });
 peer.sidechannel = sidechannel;
 

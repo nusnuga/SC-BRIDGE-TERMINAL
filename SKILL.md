@@ -69,7 +69,6 @@ This repo includes `scripts/swapctl.mjs` (with wrappers `scripts/swapctl.sh` and
 - send signed swap messages (`rfq`, `quote`, `terms`, `accept`) with schema validation
 
 If a request cannot be fulfilled with a one-liner, create role-specific scripts (service vs client) that fully specify flags, channels, RPC endpoints, and wallet paths.
-
 ## Quick Start (Clone + Run)
 Use Pear runtime only (never native node).
 
@@ -261,6 +260,7 @@ Core:
 Sidechannels:
 - `--sidechannels a,b,c` (or `--sidechannel a,b,c`) : extra sidechannels to join at startup.
 - `--sidechannel-debug 1` : verbose sidechannel logs.
+- `--sidechannel-quiet 0|1` : suppress printing received sidechannel messages to stdout (still relays). Useful for always-on relay/backbone peers.
 - `--sidechannel-max-bytes <n>` : payload size guard.
 - `--sidechannel-allow-remote-open 0|1` : accept/reject `/sc_open` requests.
 - `--sidechannel-auto-join 0|1` : auto‑join requested channels.
@@ -441,6 +441,15 @@ Intercom must expose and describe all interactive commands so agents can operate
 - **Message size guard** defaults to 1,000,000 bytes (JSON‑encoded payload).
 - **Diagnostics:** use `--sidechannel-debug 1` and `/sc_stats` to confirm connection counts and message flow.
 - **DHT readiness:** sidechannels wait for the DHT to be fully bootstrapped before joining topics. On cold start this can take a few seconds (watch for `Sidechannel: ready`).
+- **Robustness hardener (invite-only + relay) (optional):** if you want invite-only messages to propagate reliably, invite **more than just the endpoints**.  
+  Relay can only forward through peers that are **authorized** for the channel, so add a small set of always-on backbone peers (3-5 is a good start) and invite them too.
+  - Keep backbone peers inert:
+    - run them “quiet” (relay but don’t print): `--sidechannel-quiet 1`
+    - disable dynamic opens/join: `--sidechannel-allow-remote-open 0 --sidechannel-auto-join 0`
+    - do not load any chain credentials on them (no LN/Solana keys)
+    - consider `--sidechannel-owner-write-only 1` so they cannot broadcast non-auth payloads
+  - Do not auto-spawn these peers by default. If a workflow would add extra instances, ask the human first.
+  - Tradeoff: any invited relay peer can read channel plaintext. If you require “relays cannot read”, you need message-level encryption (ciphertext relay).
 - **Dynamic channel requests**: `/sc_open` posts a request in the entry channel; you can auto‑join with `--sidechannel-auto-join 1`.
 - **Invites**: uses the **peer pubkey** (transport identity). Invites may also include the inviter’s **trac address** for payments, but verification is by peer pubkey.
 - **Invite delivery**: the invite is a signed JSON/base64 blob. You can deliver it via `0000intercom` **or** out‑of‑band (email, website, QR, etc.).
@@ -451,14 +460,6 @@ Intercom must expose and describe all interactive commands so agents can operate
     - Sender-side gating: for invite-only channels, outbound `broadcast()` only sends to connections that have proven a valid invite.
     - Relay stays enabled, but relays only forward to **authorized** peers and **never** relays `control:auth` / `control:welcome`.
   - Debugging: with `--sidechannel-debug 1`, you will see `skip (unauthorized) <pubkey>` when an uninvited peer is connected.
-  - **Robust invite-only relaying (optional):**
-    - To improve delivery when peers are not fully meshed, run **3-5 always-on relay-only peers** you control (in different networks/hosts) and **invite them** into protected channels (e.g. `swap:<id>`).
-    - Keep relay peers inert:
-      - do not load any chain credentials on them (no LN/Solana keys)
-      - prefer `--sidechannel-owner-write-only 1` so they cannot broadcast non-auth payloads
-      - they should only connect, authorize via invite, and relay what they receive.
-    - Do **not** auto-spawn these relay peers by default. If a workflow would add extra instances, ask the human first.
-    - Tradeoff: any invited relay peer can see channel plaintext. If you require “relays cannot read”, you need message-level encryption (ciphertext relay).
 - **Topic collisions:** topics are derived via SHA-256 from `sidechannel:<channelName>` (collision-resistant). Avoid relying on legacy topic derivation.
 - **Welcome**: required for **all** sidechannels (public + invite‑only) **except** `0000intercom`.  
   Configure `--sidechannel-owner` on **every peer** that should accept a channel, and distribute the owner‑signed welcome via `--sidechannel-welcome` (or include it in `/sc_open` / `/sc_invite`).
