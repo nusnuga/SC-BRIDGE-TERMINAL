@@ -73,6 +73,9 @@ export function validateSwapBody(kind, body) {
       }
       if (!isPosInt(body.btc_sats)) return { ok: false, error: 'rfq.btc_sats must be a positive integer' };
       if (!isAmountString(body.usdt_amount)) return { ok: false, error: 'rfq.usdt_amount must be a decimal string' };
+      if (body.valid_until_unix !== undefined && !isPosInt(body.valid_until_unix)) {
+        return { ok: false, error: 'rfq.valid_until_unix must be a unix seconds integer' };
+      }
       return { ok: true, error: null };
     }
 
@@ -80,9 +83,13 @@ export function validateSwapBody(kind, body) {
       if (typeof body.rfq_id !== 'string' || body.rfq_id.trim().length === 0) {
         return { ok: false, error: 'quote.rfq_id is required' };
       }
+      if (body.pair !== PAIR.BTC_LN__USDT_SOL) return { ok: false, error: 'quote.pair unsupported' };
+      if (body.direction !== `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`) {
+        return { ok: false, error: 'quote.direction unsupported' };
+      }
       if (!isAmountString(body.usdt_amount)) return { ok: false, error: 'quote.usdt_amount must be a decimal string' };
       if (!isPosInt(body.btc_sats)) return { ok: false, error: 'quote.btc_sats must be a positive integer' };
-      if (body.valid_until_unix !== undefined && !isPosInt(body.valid_until_unix)) {
+      if (!isPosInt(body.valid_until_unix)) {
         return { ok: false, error: 'quote.valid_until_unix must be a unix seconds integer' };
       }
       return { ok: true, error: null };
@@ -201,4 +208,3 @@ export function validateSwapEnvelope(envelope) {
   if (!base.ok) return base;
   return validateSwapBody(envelope.kind, envelope.body);
 }
-

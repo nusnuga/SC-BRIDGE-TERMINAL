@@ -67,3 +67,55 @@ test('swap schema: terms + accept validate', async () => {
   assert.equal(validateSwapEnvelope(accept).ok, true);
 });
 
+test('swap schema: rfq + quote validate', async () => {
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const rfq = createUnsignedEnvelope({
+    v: 1,
+    kind: KIND.RFQ,
+    tradeId: 'rfq_1',
+    body: {
+      pair: PAIR.BTC_LN__USDT_SOL,
+      direction: `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`,
+      btc_sats: 1000,
+      usdt_amount: '1000000',
+      valid_until_unix: nowSec + 60,
+    },
+    ts: Date.now(),
+    nonce: 'r1',
+  });
+  assert.equal(validateSwapEnvelope(rfq).ok, true);
+
+  const quote = createUnsignedEnvelope({
+    v: 1,
+    kind: KIND.QUOTE,
+    tradeId: 'quote_1',
+    body: {
+      rfq_id: 'rfq_1',
+      pair: PAIR.BTC_LN__USDT_SOL,
+      direction: `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`,
+      btc_sats: 1000,
+      usdt_amount: '1000000',
+      valid_until_unix: nowSec + 30,
+    },
+    ts: Date.now(),
+    nonce: 'q1',
+  });
+  assert.equal(validateSwapEnvelope(quote).ok, true);
+
+  const quoteMissingExpiry = createUnsignedEnvelope({
+    v: 1,
+    kind: KIND.QUOTE,
+    tradeId: 'quote_2',
+    body: {
+      rfq_id: 'rfq_1',
+      pair: PAIR.BTC_LN__USDT_SOL,
+      direction: `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`,
+      btc_sats: 1000,
+      usdt_amount: '1000000',
+    },
+    ts: Date.now(),
+    nonce: 'q2',
+  });
+  assert.equal(validateSwapEnvelope(quoteMissingExpiry).ok, false);
+});
