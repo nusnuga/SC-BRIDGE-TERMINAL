@@ -23,6 +23,27 @@ This fork keeps Intercom intact and layers swap + ops tooling on top.
 
 ---
 
+## Table Of Contents
+
+- [Install And Operate From `SKILL.md`](#install-and-operate-from-skillmd)
+- [How To Use `SKILL.md` With An Agent](#how-to-use-skillmd-with-an-agent)
+- [Conceptual Flow (BTC(LN) <> USDT(Solana))](#conceptual-flow-btcln--usdtsolana)
+- [External APIs / RPCs (Defaults)](#external-apis--rpcs-defaults)
+- [Command Surface (Scripts = "Function Calls")](#command-surface-scripts--function-calls)
+- [Start Intercom Peers (`run-swap-*`)](#start-intercom-peers-run-swap-)
+- [SC-Bridge Control (`swapctl`)](#sc-bridge-control-swapctl)
+- [RFQ Bots (`rfq-maker` / `rfq-taker`)](#rfq-bots-rfq-maker--rfq-taker)
+- [Recovery (`swaprecover`)](#recovery-swaprecover)
+- [Solana Wallet Tooling (`solctl`)](#solana-wallet-tooling-solctl)
+- [Solana Escrow Program Tooling (`escrowctl`)](#solana-escrow-program-tooling-escrowctl)
+- [Lightning Operator Tooling (`lnctl`)](#lightning-operator-tooling-lnctl)
+- [Optional LND Local Lifecycle (`lndctl` / `lndpw`)](#optional-lnd-local-lifecycle-lndctl--lndpw)
+- [Prompt Router (Planned)](#prompt-router-planned)
+- [Tests (Mandatory)](#tests-mandatory)
+- [Secrets + Repo Hygiene](#secrets--repo-hygiene)
+
+---
+
 ## Install And Operate From `SKILL.md`
 
 `SKILL.md` is the canonical **installer + runbook** for this repo. If you are an agent, treat it as the source of truth for:
