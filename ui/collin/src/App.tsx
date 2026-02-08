@@ -27,13 +27,27 @@ function App() {
   const [selected, setSelected] = useState<any>(null);
 
   const [promptInput, setPromptInput] = useState('');
+  const [toolFilter, setToolFilter] = useState('');
   const [toolName, setToolName] = useState('');
   const [toolArgsText, setToolArgsText] = useState('{\n  \n}');
+  const [toolInputMode, setToolInputMode] = useState<'form' | 'json'>('form');
+  const [toolArgsObj, setToolArgsObj] = useState<Record<string, any>>({});
+  const [toolArgsParseErr, setToolArgsParseErr] = useState<string | null>(null);
 
   const [promptEvents, setPromptEvents] = useState<any[]>([]);
   const [scEvents, setScEvents] = useState<any[]>([]);
   const scEventsMax = 3000;
   const promptEventsMax = 3000;
+
+  const [runBusy, setRunBusy] = useState(false);
+  const [runErr, setRunErr] = useState<string | null>(null);
+  const [consoleEvents, setConsoleEvents] = useState<any[]>([]);
+  const consoleEventsMax = 500;
+  const consoleListRef = useRef<HTMLDivElement | null>(null);
+  const [consoleFollowTail, setConsoleFollowTail] = useState(true);
+
+  const [preflight, setPreflight] = useState<any>(null);
+  const [preflightBusy, setPreflightBusy] = useState(false);
 
   const scAbortRef = useRef<AbortController | null>(null);
   const promptAbortRef = useRef<AbortController | null>(null);
@@ -66,6 +80,16 @@ function App() {
   const inviteEvents = useMemo(() => {
     return filteredScEvents.filter((e) => String(e.kind || '') === 'swap.swap_invite');
   }, [filteredScEvents]);
+
+  const knownChannels = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of scEvents) {
+      const c = String((e as any)?.channel || '').trim();
+      if (c) set.add(c);
+    }
+    for (const c of scChannels.split(',').map((s) => s.trim()).filter(Boolean)) set.add(c);
+    return Array.from(set).sort();
+  }, [scEvents, scChannels]);
 
   function oldestDbId(list: any[]) {
     let min = Number.POSITIVE_INFINITY;
@@ -154,6 +178,46 @@ function App() {
     return out;
   }
 
+  const activeTool = useMemo(() => {
+    if (!tools || !toolName) return null;
+    return (tools as any[]).find((t: any) => t?.name === toolName) || null;
+  }, [tools, toolName]);
+
+  const groupedTools = useMemo(() => {
+    const list = tools || [];
+    const q = toolFilter.trim().toLowerCase();
+    const groups: Record<string, any[]> = {};
+    for (const t of list) {
+      const name = String((t as any)?.name || '');
+      const desc = String((t as any)?.description || '');
+      const g = toolGroup(name);
+      if (q) {
+        const hay = (name + ' ' + desc).toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      (groups[g] ||= []).push(t);
+    }
+    const order = [
+      'SC-Bridge',
+      'Peers',
+      'RFQ Protocol',
+      'Swap Helpers',
+      'RFQ Bots',
+      'Lightning',
+      'Solana',
+      'Receipts/Recovery',
+      'Other',
+    ];
+    const out = [];
+    for (const g of order) {
+      const arr = groups[g];
+      if (!arr || arr.length === 0) continue;
+      arr.sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
+      out.push({ group: g, tools: arr });
+    }
+    return out;
+  }, [tools, toolFilter]);
+
   async function fetchJson(path: string, init?: RequestInit) {
     const res = await fetch(path, {
       ...init,
@@ -167,6 +231,29 @@ function App() {
       throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ''}`);
     }
     return await res.json();
+  }
+
+  function setToolArgsBoth(obj: any) {
+    const o = obj && typeof obj === 'object' ? obj : {};
+    setToolArgsObj(o as any);
+    setToolArgsText(JSON.stringify(o, null, 2));
+  }
+
+  async function runDirectToolOnce(name: string, args: any, { auto_approve = false } = {}) {
+    const prompt = JSON.stringify({ type: 'tool', name, arguments: args && typeof args === 'object' ? args : {} });
+    const out = await fetchJson('/v1/run', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, session_id: sessionId, auto_approve, dry_run: false }),
+    });
+    if (out && typeof out === 'object') {
+      if (out.content_json !== undefined) return out.content_json;
+      if (typeof out.content === 'string') {
+        try {
+          return JSON.parse(out.content);
+        } catch (_e) {}
+      }
+    }
+    return out;
   }
 
   async function refreshHealth() {
@@ -191,6 +278,68 @@ function App() {
         { persist: false }
       );
     }
+  }
+
+  function summarizeLn(listfunds: any) {
+    try {
+      if (!listfunds || typeof listfunds !== 'object') return { ok: false, channels: 0 };
+      // CLN: { channels: [...] }
+      if (Array.isArray((listfunds as any).channels)) {
+        return { ok: true, channels: (listfunds as any).channels.length };
+      }
+      // LND wrapper: { channels: { channels: [...] } }
+      const ch = (listfunds as any).channels;
+      if (ch && typeof ch === 'object' && Array.isArray(ch.channels)) {
+        return { ok: true, channels: ch.channels.length };
+      }
+      return { ok: true, channels: 0 };
+    } catch (_e) {
+      return { ok: false, channels: 0 };
+    }
+  }
+
+  async function refreshPreflight() {
+    setPreflightBusy(true);
+    const out: any = { ts: Date.now() };
+    try {
+      out.peer_status = await runDirectToolOnce('intercomswap_peer_status', {}, { auto_approve: false });
+    } catch (e: any) {
+      out.peer_status_error = e?.message || String(e);
+    }
+    try {
+      out.sc_info = await runDirectToolOnce('intercomswap_sc_info', {}, { auto_approve: false });
+    } catch (e: any) {
+      out.sc_info_error = e?.message || String(e);
+    }
+    try {
+      out.ln_info = await runDirectToolOnce('intercomswap_ln_info', {}, { auto_approve: false });
+    } catch (e: any) {
+      out.ln_info_error = e?.message || String(e);
+    }
+    try {
+      out.ln_listfunds = await runDirectToolOnce('intercomswap_ln_listfunds', {}, { auto_approve: false });
+      out.ln_summary = summarizeLn(out.ln_listfunds);
+    } catch (e: any) {
+      out.ln_listfunds_error = e?.message || String(e);
+    }
+    try {
+      out.sol_signer = await runDirectToolOnce('intercomswap_sol_signer_pubkey', {}, { auto_approve: false });
+    } catch (e: any) {
+      out.sol_signer_error = e?.message || String(e);
+    }
+    try {
+      out.sol_config = await runDirectToolOnce('intercomswap_sol_config_get', {}, { auto_approve: false });
+    } catch (e: any) {
+      out.sol_config_error = e?.message || String(e);
+    }
+    try {
+      out.app = await runDirectToolOnce('intercomswap_app_info', {}, { auto_approve: false });
+    } catch (e: any) {
+      out.app_error = e?.message || String(e);
+    }
+
+    setPreflight(out);
+    setPreflightBusy(false);
   }
 
   async function appendPromptEvent(evt: any, { persist = true } = {}) {
@@ -306,6 +455,10 @@ function App() {
     const ac = new AbortController();
     promptAbortRef.current = ac;
 
+    setRunBusy(true);
+    setRunErr(null);
+    setConsoleEvents([]);
+
     await appendPromptEvent({ type: 'ui', ts: Date.now(), message: 'run starting...' }, { persist: false });
 
     try {
@@ -338,11 +491,27 @@ function App() {
             continue;
           }
           if (obj.type === 'run_start' && obj.session_id) setSessionId(String(obj.session_id));
+          if (obj.type === 'error') setRunErr(String(obj.error || 'error'));
+          if (obj.type === 'done') setRunBusy(false);
+          setConsoleEvents((prev) => {
+            const next = prev.concat([obj]);
+            if (next.length <= consoleEventsMax) return next;
+            return next.slice(next.length - consoleEventsMax);
+          });
           await appendPromptEvent(obj, { persist: true });
         }
       }
     } catch (err: any) {
-      await appendPromptEvent({ type: 'error', ts: Date.now(), error: err?.message || String(err) }, { persist: false });
+      const msg = err?.message || String(err);
+      setRunErr(msg);
+      setConsoleEvents((prev) => {
+        const next = prev.concat([{ type: 'error', ts: Date.now(), error: msg }]);
+        if (next.length <= consoleEventsMax) return next;
+        return next.slice(next.length - consoleEventsMax);
+      });
+      await appendPromptEvent({ type: 'error', ts: Date.now(), error: msg }, { persist: false });
+    } finally {
+      setRunBusy(false);
     }
   }
 
@@ -350,12 +519,31 @@ function App() {
     if (runMode === 'tool') {
       const name = toolName.trim();
       if (!name) return;
-      let args: any = null;
-      try {
-        args = toolArgsText.trim() ? JSON.parse(toolArgsText) : {};
-      } catch (e: any) {
-        void appendPromptEvent({ type: 'error', ts: Date.now(), error: `Invalid JSON args: ${e?.message || String(e)}` }, { persist: false });
-        return;
+      let args: any = {};
+      if (toolInputMode === 'form') {
+        args = toolArgsObj && typeof toolArgsObj === 'object' ? toolArgsObj : {};
+      } else {
+        try {
+          args = toolArgsText.trim() ? JSON.parse(toolArgsText) : {};
+          setToolArgsParseErr(null);
+          if (args && typeof args === 'object') setToolArgsObj(args);
+        } catch (e: any) {
+          const msg = `Invalid JSON args: ${e?.message || String(e)}`;
+          setToolArgsParseErr(msg);
+          setRunErr(msg);
+          void appendPromptEvent({ type: 'error', ts: Date.now(), error: msg }, { persist: false });
+          return;
+        }
+      }
+
+      if (toolRequiresApproval(name) && !autoApprove) {
+        const ok = window.confirm(`${name} requires approval (it changes state or can move funds).\n\nApprove once and run now?`);
+        if (!ok) {
+          const msg = `${name}: blocked (not approved)`;
+          setRunErr(msg);
+          void appendPromptEvent({ type: 'error', ts: Date.now(), error: msg }, { persist: false });
+          return;
+        }
       }
       const directToolPrompt = {
         type: 'tool',
@@ -365,7 +553,7 @@ function App() {
       await runPromptStream({
         prompt: JSON.stringify(directToolPrompt),
         session_id: sessionId,
-        auto_approve: autoApprove,
+        auto_approve: toolRequiresApproval(name) ? true : autoApprove,
         dry_run: false,
       });
       return;
@@ -411,6 +599,13 @@ function App() {
     el.scrollTop = el.scrollHeight;
   }, [scEvents, scFollowTail]);
 
+  useEffect(() => {
+    if (!consoleFollowTail) return;
+    const el = consoleListRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [consoleEvents, consoleFollowTail]);
+
   const onScScroll = () => {
     const cur = scListRef.current;
     if (!cur) return;
@@ -444,6 +639,7 @@ function App() {
           <div className="statusline">
             <StatusPill label="promptd" state={health?.ok ? 'ok' : 'bad'} />
             <StatusPill label="sc/stream" state={scConnected ? 'ok' : 'idle'} />
+            <StatusPill label="run" state={runBusy ? 'neutral' : runErr ? 'bad' : 'idle'} value={runBusy ? 'RUNNING' : runErr ? 'ERR' : ''} />
             <StatusPill label="mode" state="neutral" value={runMode.toUpperCase()} />
             <span className="muted small">{health ? new Date(health.ts).toLocaleTimeString() : '...'}</span>
           </div>
@@ -492,6 +688,177 @@ function App() {
       <main className="main">
         {activeTab === 'overview' ? (
           <div className="grid2">
+            <Panel title="Getting Started">
+              <p className="muted">
+                Linear checklist for running swaps. If something is missing, use the buttons to prepare tool calls (and
+                run them from the console).
+              </p>
+              <div className="row">
+                <button className="btn primary" onClick={refreshPreflight} disabled={preflightBusy}>
+                  {preflightBusy ? 'Checking…' : 'Refresh checklist'}
+                </button>
+                {preflight?.ts ? <span className="muted small">last: {new Date(preflight.ts).toLocaleTimeString()}</span> : null}
+              </div>
+
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono">1) Peer + SC-Bridge</span>
+                  {preflight?.peer_status?.peers?.some?.((p: any) => p?.alive) ? (
+                    <span className="chip hi">running</span>
+                  ) : (
+                    <span className="chip">not running</span>
+                  )}
+                </div>
+                <div className="muted small">
+                  Collin’s live stream needs a peer with SC-Bridge enabled (default port <span className="mono">49222</span>).
+                </div>
+                {preflight?.peer_status_error ? <div className="alert bad">{String(preflight.peer_status_error)}</div> : null}
+                <div className="row">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setRunMode('tool');
+                      setToolName('intercomswap_peer_start');
+                      setToolArgsBoth({
+                        name: 'swap-maker-peer',
+                        store: 'swap-maker',
+                        sc_port: 49222,
+                        sidechannels: scChannels.split(',').map((s) => s.trim()).filter(Boolean),
+                        pow_enabled: true,
+                        pow_difficulty: 12,
+                        invite_required: true,
+                        welcome_required: false,
+                        invite_prefixes: ['swap:'],
+                      });
+                      setPromptOpen(true);
+                    }}
+                  >
+                    Prepare peer_start (swap-maker)
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setRunMode('tool');
+                      setToolName('intercomswap_peer_status');
+                      setToolArgsBoth({});
+                      setPromptOpen(true);
+                    }}
+                  >
+                    peer_status
+                  </button>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono">2) Sidechannel stream</span>
+                  {scConnected ? <span className="chip hi">connected</span> : <span className="chip">disconnected</span>}
+                </div>
+                {preflight?.sc_info_error ? <div className="alert bad">{String(preflight.sc_info_error)}</div> : null}
+                <div className="row">
+                  {!scConnected ? (
+                    <button className="btn primary" onClick={startScStream}>
+                      Connect sc/stream
+                    </button>
+                  ) : (
+                    <button className="btn" onClick={stopScStream}>
+                      Stop sc/stream
+                    </button>
+                  )}
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      const chans = scChannels.split(',').map((s) => s.trim()).filter(Boolean);
+                      if (chans.length === 0) return;
+                      setRunMode('tool');
+                      setToolName('intercomswap_sc_subscribe');
+                      setToolArgsBoth({ channels: chans });
+                      setPromptOpen(true);
+                    }}
+                  >
+                    Prepare subscribe
+                  </button>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono">3) Lightning readiness</span>
+                  {preflight?.ln_summary?.channels > 0 ? (
+                    <span className="chip hi">{preflight.ln_summary.channels} channel(s)</span>
+                  ) : (
+                    <span className="chip">no channels</span>
+                  )}
+                </div>
+                <div className="muted small">
+                  Swaps can route over the LN network, but you still need an LN node with funds and typically at least one channel for paying invoices.
+                </div>
+                {preflight?.ln_listfunds_error ? <div className="alert bad">{String(preflight.ln_listfunds_error)}</div> : null}
+                <div className="row">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setRunMode('tool');
+                      setToolName('intercomswap_ln_listfunds');
+                      setToolArgsBoth({});
+                      setPromptOpen(true);
+                    }}
+                  >
+                    ln_listfunds
+                  </button>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono">4) Solana readiness</span>
+                  {preflight?.sol_signer?.pubkey ? <span className="chip hi">signer ok</span> : <span className="chip">unknown</span>}
+                </div>
+                {preflight?.sol_signer_error ? <div className="alert bad">{String(preflight.sol_signer_error)}</div> : null}
+                {preflight?.sol_config_error ? <div className="alert bad">{String(preflight.sol_config_error)}</div> : null}
+                <div className="row">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setRunMode('tool');
+                      setToolName('intercomswap_sol_signer_pubkey');
+                      setToolArgsBoth({});
+                      setPromptOpen(true);
+                    }}
+                  >
+                    sol_signer_pubkey
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setRunMode('tool');
+                      setToolName('intercomswap_sol_config_get');
+                      setToolArgsBoth({});
+                      setPromptOpen(true);
+                    }}
+                  >
+                    sol_config_get
+                  </button>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono">App binding</span>
+                  {preflight?.app?.app_hash ? <span className="chip hi">bound</span> : <span className="chip">unknown</span>}
+                </div>
+                <div className="muted small">
+                  RFQs/quotes include an <span className="mono">app_hash</span> so forks using different programs/tickers don’t mix in the same channels.
+                </div>
+                {preflight?.app_error ? <div className="alert bad">{String(preflight.app_error)}</div> : null}
+                {preflight?.app?.app_hash ? (
+                  <div className="muted small">
+                    app_hash: <span className="mono">{String(preflight.app.app_hash).slice(0, 32)}…</span>
+                  </div>
+                ) : null}
+              </div>
+            </Panel>
+
             <Panel title="Live Stream (virtualized)">
               <div className="row">
                 <input
@@ -543,22 +910,6 @@ function App() {
                 )}
               />
             </Panel>
-            <Panel title="Prompt Events (virtualized)">
-              <VirtualList
-                items={promptEvents}
-                itemKey={(e) => String(e.db_id || '') + ':' + String(e.type || '') + ':' + String(e.ts || '')}
-                estimatePx={68}
-                listRef={promptListRef}
-                onScroll={onPromptScroll}
-                render={(e) => (
-                  <EventRow
-                    evt={e}
-                    onSelect={() => setSelected({ type: 'prompt_event', evt: e })}
-                    selected={selected?.type === 'prompt_event' && selected?.evt === e}
-                  />
-                )}
-              />
-            </Panel>
           </div>
         ) : null}
 
@@ -597,7 +948,7 @@ function App() {
                     if (chans.length === 0) return;
                     setRunMode('tool');
                     setToolName('intercomswap_sc_subscribe');
-                    setToolArgsText(JSON.stringify({ channels: chans }, null, 2));
+                    setToolArgsBoth({ channels: chans });
                     setPromptOpen(true);
                   }}
                 >
@@ -613,7 +964,7 @@ function App() {
                     if (!first) return;
                     setRunMode('tool');
                     setToolName('intercomswap_sc_join');
-                    setToolArgsText(JSON.stringify({ channel: first }, null, 2));
+                    setToolArgsBoth({ channel: first });
                     setPromptOpen(true);
                   }}
                 >
@@ -657,17 +1008,7 @@ function App() {
                     onQuote={() => {
                       setRunMode('tool');
                       setToolName('intercomswap_quote_post_from_rfq');
-                      setToolArgsText(
-                        JSON.stringify(
-                          {
-                            channel: e.channel,
-                            rfq_envelope: e.message,
-                            valid_for_sec: 60,
-                          },
-                          null,
-                          2
-                        )
-                      );
+                      setToolArgsBoth({ channel: e.channel, rfq_envelope: e.message, valid_for_sec: 60 });
                       setPromptOpen(true);
                     }}
                   />
@@ -680,19 +1021,13 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_rfq_post');
-                  setToolArgsText(
-                    JSON.stringify(
-                      {
-                        channel: scChannels.split(',')[0]?.trim() || '0000intercomswapbtcusdt',
-                        trade_id: `rfq-${Date.now()}`,
-                        btc_sats: 10000,
-                        usdt_amount: '1000000',
-                        valid_until_unix: Math.floor(Date.now() / 1000) + 600,
-                      },
-                      null,
-                      2
-                    )
-                  );
+                  setToolArgsBoth({
+                    channel: scChannels.split(',')[0]?.trim() || '0000intercomswapbtcusdt',
+                    trade_id: `rfq-${Date.now()}`,
+                    btc_sats: 10000,
+                    usdt_amount: '1000000',
+                    valid_until_unix: Math.floor(Date.now() / 1000) + 600,
+                  });
                   setPromptOpen(true);
                 }}
               >
@@ -719,7 +1054,7 @@ function App() {
                     onJoin={() => {
                       setRunMode('tool');
                       setToolName('intercomswap_join_from_swap_invite');
-                      setToolArgsText(JSON.stringify({ swap_invite_envelope: e.message }, null, 2));
+                      setToolArgsBoth({ swap_invite_envelope: e.message });
                       setPromptOpen(true);
                     }}
                   />
@@ -732,7 +1067,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_sc_leave');
-                  setToolArgsText(JSON.stringify({ channel: 'swap:...' }, null, 2));
+                  setToolArgsBoth({ channel: 'swap:...' });
                   setPromptOpen(true);
                 }}
               >
@@ -751,7 +1086,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_receipts_list_open_refunds');
-                  setToolArgsText(JSON.stringify({ limit: 100, offset: 0 }, null, 2));
+                  setToolArgsBoth({ limit: 100, offset: 0 });
                   setPromptOpen(true);
                 }}
               >
@@ -762,7 +1097,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_swaprecover_refund');
-                  setToolArgsText(JSON.stringify({ trade_id: '...', payment_hash_hex: '...' }, null, 2));
+                  setToolArgsBoth({ trade_id: '...', payment_hash_hex: '...' });
                   setPromptOpen(true);
                 }}
               >
@@ -775,7 +1110,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_receipts_list_open_claims');
-                  setToolArgsText(JSON.stringify({ limit: 100, offset: 0 }, null, 2));
+                  setToolArgsBoth({ limit: 100, offset: 0 });
                   setPromptOpen(true);
                 }}
               >
@@ -786,7 +1121,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_swaprecover_claim');
-                  setToolArgsText(JSON.stringify({ trade_id: '...', payment_hash_hex: '...' }, null, 2));
+                  setToolArgsBoth({ trade_id: '...', payment_hash_hex: '...' });
                   setPromptOpen(true);
                 }}
               >
@@ -803,34 +1138,34 @@ function App() {
                 className="btn primary"
                 onClick={() => {
                   setRunMode('tool');
-                  setToolName('intercomswap_ln_get_info');
-                  setToolArgsText('{\n  \n}');
+                  setToolName('intercomswap_ln_info');
+                  setToolArgsBoth({});
                   setPromptOpen(true);
                 }}
               >
-                ln_get_info
+                ln_info
               </button>
               <button
                 className="btn"
                 onClick={() => {
                   setRunMode('tool');
-                  setToolName('intercomswap_ln_list_funds');
-                  setToolArgsText('{\n  \n}');
+                  setToolName('intercomswap_ln_listfunds');
+                  setToolArgsBoth({});
                   setPromptOpen(true);
                 }}
               >
-                ln_list_funds
+                ln_listfunds
               </button>
               <button
                 className="btn"
                 onClick={() => {
                   setRunMode('tool');
-                  setToolName('intercomswap_ln_new_address');
-                  setToolArgsText(JSON.stringify({ type: 'bech32' }, null, 2));
+                  setToolName('intercomswap_ln_newaddr');
+                  setToolArgsBoth({});
                   setPromptOpen(true);
                 }}
               >
-                ln_new_address
+                ln_newaddr
               </button>
             </Panel>
             <Panel title="Solana">
@@ -839,7 +1174,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_sol_config_get');
-                  setToolArgsText('{\n  \n}');
+                  setToolArgsBoth({});
                   setPromptOpen(true);
                 }}
               >
@@ -850,7 +1185,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_sol_balance');
-                  setToolArgsText(JSON.stringify({ pubkey: '...' }, null, 2));
+                  setToolArgsBoth({ pubkey: '...' });
                   setPromptOpen(true);
                 }}
               >
@@ -868,7 +1203,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_peer_status');
-                  setToolArgsText('{\n  \n}');
+                  setToolArgsBoth({});
                   setPromptOpen(true);
                 }}
               >
@@ -879,22 +1214,17 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_peer_start');
-                  setToolArgsText(
-                    JSON.stringify(
-                      {
-                        name: 'peer1',
-                        store: 'peer1',
-                        sc_port: 49222,
-                        sidechannels: scChannels.split(',').map((s) => s.trim()).filter(Boolean),
-                        pow_enabled: true,
-                        pow_difficulty: 1,
-                        invite_required: true,
-                        welcome_required: true,
-                      },
-                      null,
-                      2
-                    )
-                  );
+                  setToolArgsBoth({
+                    name: 'peer1',
+                    store: 'peer1',
+                    sc_port: 49222,
+                    sidechannels: scChannels.split(',').map((s) => s.trim()).filter(Boolean),
+                    pow_enabled: true,
+                    pow_difficulty: 12,
+                    invite_required: true,
+                    welcome_required: false,
+                    invite_prefixes: ['swap:'],
+                  });
                   setPromptOpen(true);
                 }}
               >
@@ -908,7 +1238,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_rfqbot_status');
-                  setToolArgsText('{\n  \n}');
+                  setToolArgsBoth({});
                   setPromptOpen(true);
                 }}
               >
@@ -919,18 +1249,7 @@ function App() {
                 onClick={() => {
                   setRunMode('tool');
                   setToolName('intercomswap_rfqbot_start_maker');
-                  setToolArgsText(
-                    JSON.stringify(
-                      {
-                        name: 'maker1',
-                        store: 'maker1',
-                        sc_port: 49222,
-                        argv: [],
-                      },
-                      null,
-                      2
-                    )
-                  );
+                  setToolArgsBoth({ name: 'maker1', store: 'maker1', sc_port: 49222, argv: [] });
                   setPromptOpen(true);
                 }}
               >
@@ -993,7 +1312,7 @@ function App() {
                     if (selected?.type === 'sc_event') {
                       setRunMode('tool');
                       setToolName('intercomswap_sc_send_json');
-                      setToolArgsText(JSON.stringify({ channel: selected.evt.channel, json: { ack: true } }, null, 2));
+                      setToolArgsBoth({ channel: selected.evt.channel, json: { ack: true } });
                       setPromptOpen(true);
                     }
                   }}
@@ -1014,6 +1333,10 @@ function App() {
             <span className="mono small">{sessionId || 'new'}</span>
           </div>
           <div className="promptbar-right">
+            <label className="check small">
+              <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} />
+              approve
+            </label>
             <label className="seg">
               <input type="radio" name="mode" checked={runMode === 'tool'} onChange={() => setRunMode('tool')} />
               <span>Tool</span>
@@ -1029,23 +1352,128 @@ function App() {
         </div>
 
         <div className="promptbody">
+          {runErr ? <div className="alert bad">Error: {runErr}</div> : null}
+
           {runMode === 'tool' ? (
             <div className="toolrun">
               <div className="row">
-                <select className="select" value={toolName} onChange={(e) => setToolName(e.target.value)}>
-                  {(tools || []).map((t: any) => (
-                    <option key={t.name} value={t.name}>
-                      {t.name}
-                    </option>
+                <input
+                  className="input"
+                  value={toolFilter}
+                  onChange={(e) => setToolFilter(e.target.value)}
+                  placeholder="search tools…"
+                />
+                <label className="seg">
+                  <input
+                    type="radio"
+                    name="toolinput"
+                    checked={toolInputMode === 'form'}
+                    onChange={() => {
+                      setToolInputMode('form');
+                      setToolArgsParseErr(null);
+                    }}
+                  />
+                  <span>Form</span>
+                </label>
+                <label className="seg">
+                  <input
+                    type="radio"
+                    name="toolinput"
+                    checked={toolInputMode === 'json'}
+                    onChange={() => {
+                      setToolInputMode('json');
+                      setToolArgsText(JSON.stringify(toolArgsObj || {}, null, 2));
+                      setToolArgsParseErr(null);
+                    }}
+                  />
+                  <span>JSON</span>
+                </label>
+              </div>
+
+              <div className="row">
+                <select
+                  className="select"
+                  value={toolName}
+                  onChange={(e) => {
+                    setToolName(e.target.value);
+                    setToolArgsBoth({});
+                    setToolArgsParseErr(null);
+                  }}
+                >
+                  {groupedTools.map((g: any) => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.tools.map((t: any) => (
+                        <option key={t.name} value={t.name}>
+                          {toolShortName(t.name)}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
-                <button className="btn primary" onClick={onRun}>
-                  Run
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setToolArgsBoth({});
+                    setToolArgsParseErr(null);
+                  }}
+                  disabled={runBusy}
+                >
+                  Reset
+                </button>
+                <button
+                  className="btn primary"
+                  onClick={onRun}
+                  disabled={runBusy}
+                  title={toolRequiresApproval(toolName) && !autoApprove ? 'Will ask for one-time approval' : ''}
+                >
+                  {runBusy ? 'Running…' : toolRequiresApproval(toolName) && !autoApprove ? 'Approve + Run' : 'Run'}
                 </button>
               </div>
-              <textarea className="textarea mono" value={toolArgsText} onChange={(e) => setToolArgsText(e.target.value)} />
+
+              {activeTool ? (
+                <div className="toolhelp">
+                  <div className="muted small">{activeTool.description}</div>
+                  {toolRequiresApproval(activeTool.name) ? (
+                    <div className="muted small">
+                      <span className="chip hi">requires approve</span> (this tool changes state or can move funds)
+                    </div>
+                  ) : (
+                    <div className="muted small">
+                      <span className="chip">read-only</span>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {toolRequiresApproval(toolName) && !autoApprove ? (
+                <div className="alert warn">
+                  This tool changes state (or can move funds). It will ask for a one-time approval unless you enable{' '}
+                  <span className="mono">approve</span>.
+                </div>
+              ) : null}
+
+              {toolInputMode === 'form' ? (
+                <ToolForm tool={activeTool} args={toolArgsObj} setArgs={setToolArgsObj} knownChannels={knownChannels} />
+              ) : (
+                <>
+                  <textarea
+                    className="textarea mono"
+                    value={toolArgsText}
+                    onChange={(e) => setToolArgsText(e.target.value)}
+                    placeholder="{\n  ...\n}"
+                  />
+                  {toolArgsParseErr ? <div className="alert bad">{toolArgsParseErr}</div> : null}
+                </>
+              )}
+
+              <details className="details">
+                <summary className="muted small">Args preview</summary>
+                <pre className="code">{JSON.stringify(toolArgsObj || {}, null, 2)}</pre>
+              </details>
+
               <p className="muted small">
-                Tool mode uses direct tool-call JSON and does not expose network text to an LLM.
+                Tool mode executes structured tool calls only (no arbitrary shell) and does not expose network text to an
+                LLM by default.
               </p>
             </div>
           ) : (
@@ -1058,7 +1486,7 @@ function App() {
               />
               <div className="row">
                 <button className="btn primary" onClick={onRun}>
-                  Run
+                  {runBusy ? 'Running…' : 'Run'}
                 </button>
                 <button className="btn" onClick={() => setPromptInput('')}>
                   Clear
@@ -1066,6 +1494,25 @@ function App() {
               </div>
             </div>
           )}
+
+          <div className="consoleout">
+            <div className="row">
+              <label className="check small">
+                <input type="checkbox" checked={consoleFollowTail} onChange={(e) => setConsoleFollowTail(e.target.checked)} />
+                follow tail
+              </label>
+              <button className="btn" onClick={() => setConsoleEvents([])} disabled={runBusy}>
+                Clear output
+              </button>
+            </div>
+            <VirtualList
+              items={consoleEvents}
+              itemKey={(e) => String(e?.type || '') + ':' + String(e?.ts || e?.started_at || '') + ':' + String(e?.name || '')}
+              estimatePx={58}
+              listRef={consoleListRef}
+              render={(e) => <ConsoleEventRow evt={e} onSelect={() => setSelected({ type: 'console_event', evt: e })} />}
+            />
+          </div>
         </div>
       </section>
     </div>
@@ -1073,6 +1520,59 @@ function App() {
 }
 
 export default App
+
+const READONLY_TOOLS = new Set<string>([
+  // SC-Bridge
+  'intercomswap_sc_info',
+  'intercomswap_sc_stats',
+  'intercomswap_sc_price_get',
+  'intercomswap_sc_subscribe',
+  'intercomswap_sc_wait_envelope',
+
+  // Local supervisors
+  'intercomswap_peer_status',
+  'intercomswap_rfqbot_status',
+
+  // Wallet reads
+  'intercomswap_ln_info',
+  'intercomswap_ln_listfunds',
+
+  // Solana reads
+  'intercomswap_sol_signer_pubkey',
+  'intercomswap_sol_keypair_pubkey',
+  'intercomswap_sol_balance',
+  'intercomswap_sol_token_balance',
+  'intercomswap_sol_escrow_get',
+  'intercomswap_sol_config_get',
+  'intercomswap_sol_trade_config_get',
+
+  // Receipts reads
+  'intercomswap_receipts_list',
+  'intercomswap_receipts_show',
+  'intercomswap_receipts_list_open_claims',
+  'intercomswap_receipts_list_open_refunds',
+]);
+
+function toolRequiresApproval(name: string) {
+  return !READONLY_TOOLS.has(String(name || '').trim());
+}
+
+function toolGroup(name: string) {
+  const n = String(name || '');
+  if (n.startsWith('intercomswap_sc_')) return 'SC-Bridge';
+  if (n.startsWith('intercomswap_peer_')) return 'Peers';
+  if (n.startsWith('intercomswap_rfqbot_')) return 'RFQ Bots';
+  if (n.startsWith('intercomswap_rfq_') || n.startsWith('intercomswap_quote_') || n.startsWith('intercomswap_terms_')) return 'RFQ Protocol';
+  if (n.startsWith('intercomswap_swap_')) return 'Swap Helpers';
+  if (n.startsWith('intercomswap_ln_')) return 'Lightning';
+  if (n.startsWith('intercomswap_sol_')) return 'Solana';
+  if (n.startsWith('intercomswap_receipts_') || n.startsWith('intercomswap_swaprecover_')) return 'Receipts/Recovery';
+  return 'Other';
+}
+
+function toolShortName(name: string) {
+  return String(name || '').replace(/^intercomswap_/, '');
+}
 
 function NavButton({
   active,
@@ -1111,6 +1611,492 @@ function StatusPill({ label, state, value }: { label: string; state: 'ok' | 'bad
       <span className="pill-label">{label}</span>
       {value ? <span className="pill-value">{value}</span> : null}
     </span>
+  );
+}
+
+function pow10n(n: number) {
+  let out = 1n;
+  for (let i = 0; i < n; i += 1) out *= 10n;
+  return out;
+}
+
+function decimalToAtomic(display: string, decimals: number) {
+  const s = String(display || '').trim();
+  if (!s) return null;
+  const cleaned = s.replaceAll(',', '');
+  const m = cleaned.match(/^([0-9]+)(?:\.([0-9]+))?$/);
+  if (!m) return { ok: false as const, atomic: null, error: 'Invalid decimal format' };
+  const intPart = m[1] || '0';
+  const fracPart = m[2] || '';
+  if (fracPart.length > decimals) return { ok: false as const, atomic: null, error: `Too many decimals (max ${decimals})` };
+  const fracPadded = (fracPart + '0'.repeat(decimals)).slice(0, decimals);
+  const atomic = BigInt(intPart) * pow10n(decimals) + BigInt(fracPadded || '0');
+  return { ok: true as const, atomic: atomic.toString(), error: null };
+}
+
+function atomicToDecimal(atomic: string, decimals: number) {
+  const s = String(atomic || '').trim();
+  if (!s || !/^[0-9]+$/.test(s)) return '';
+  const bi = BigInt(s);
+  const base = pow10n(decimals);
+  const whole = bi / base;
+  const frac = bi % base;
+  const fracStr = frac.toString().padStart(decimals, '0').replace(/0+$/, '');
+  return fracStr ? `${whole.toString()}.${fracStr}` : whole.toString();
+}
+
+function btcDisplayToSats(display: string) {
+  // BTC has 8 decimals.
+  const r = decimalToAtomic(display, 8);
+  if (!r || !r.ok) return r;
+  const n = Number.parseInt(r.atomic, 10);
+  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) return { ok: false as const, atomic: null, error: 'BTC amount too large' };
+  return { ok: true as const, atomic: n, error: null };
+}
+
+function satsToBtcDisplay(sats: number) {
+  if (!Number.isFinite(sats) || sats < 0) return '';
+  return atomicToDecimal(String(Math.trunc(sats)), 8);
+}
+
+function parseLines(text: string) {
+  return String(text || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function ConsoleEventRow({ evt, onSelect }: { evt: any; onSelect: () => void }) {
+  const type = String(evt?.type || '');
+  const tsRaw = evt?.ts ?? evt?.started_at ?? null;
+  const ts = typeof tsRaw === 'number' ? new Date(tsRaw).toLocaleTimeString() : '';
+  let summary = '';
+  if (type === 'tool') summary = `${evt?.name || ''}`;
+  else if (type === 'final') summary = typeof evt?.content === 'string' ? evt.content : '';
+  else if (type === 'error') summary = String(evt?.error || 'error');
+  else if (type === 'run_start') summary = `session ${evt?.session_id || ''}`;
+  else if (type === 'done') summary = `done (${evt?.session_id || ''})`;
+
+  return (
+    <div className={`rowitem ${type === 'error' ? 'bad' : ''}`} onClick={onSelect} role="button">
+      <div className="rowitem-top">
+        {ts ? <span className="mono dim">{ts}</span> : null}
+        {type ? <span className="mono chip">{type}</span> : null}
+      </div>
+      <div className="rowitem-mid">
+        <span className="mono">{summary ? summary.slice(0, 180) : ''}</span>
+      </div>
+    </div>
+  );
+}
+
+function ToolForm({
+  tool,
+  args,
+  setArgs,
+  knownChannels,
+}: {
+  tool: any | null;
+  args: Record<string, any>;
+  setArgs: (next: Record<string, any>) => void;
+  knownChannels: string[];
+}) {
+  if (!tool) return <p className="muted small">No tool selected.</p>;
+  const params = tool?.parameters;
+  const props = params?.properties && typeof params.properties === 'object' ? params.properties : {};
+  const required = new Set(Array.isArray(params?.required) ? params.required : []);
+  const keys = Object.keys(props);
+  keys.sort((a, b) => {
+    const ar = required.has(a) ? 0 : 1;
+    const br = required.has(b) ? 0 : 1;
+    if (ar !== br) return ar - br;
+    return a.localeCompare(b);
+  });
+
+  const update = (k: string, v: any) => {
+    setArgs({ ...(args || {}), [k]: v });
+  };
+  const del = (k: string) => {
+    const next = { ...(args || {}) };
+    delete (next as any)[k];
+    setArgs(next);
+  };
+
+  return (
+    <div className="toolform">
+      <datalist id="collin-channels">
+        {knownChannels.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
+
+      {keys.map((k) => {
+        const sch = props[k] || {};
+        const isReq = required.has(k);
+        const label = k.replaceAll('_', ' ');
+        const desc = typeof sch.description === 'string' ? sch.description : '';
+        const v = (args || {})[k];
+
+        const isChannel = typeof sch.type === 'string' && sch.type === 'string' && (k === 'channel' || k.endsWith('_channel') || k.includes('channel'));
+        const isBtcSats = k === 'btc_sats' || k === 'amount_sats';
+        const isMsat = k === 'amount_msat';
+        const isUsdt = k === 'usdt_amount';
+        const isAtomicDigits = sch?.type === 'string' && typeof sch?.pattern === 'string' && sch.pattern === '^[0-9]+$';
+        const isGenericAtomic = isAtomicDigits && (k === 'amount' || k === 'lamports');
+        const enumVals = Array.isArray(sch?.enum) ? sch.enum : null;
+
+        return (
+          <div key={k} className="field">
+            <div className="field-hd">
+              <span className="mono">{label}</span>
+              {isReq ? <span className="chip hi">required</span> : <span className="chip">optional</span>}
+            </div>
+            {desc ? <div className="muted small">{desc}</div> : null}
+
+            {isUsdt ? (
+              <AtomicDisplayField
+                name={`amt-${tool.name}-${k}`}
+                atomic={typeof v === 'string' ? v : ''}
+                decimals={6}
+                symbol="USDT"
+                onAtomic={(next) => (next === null ? del(k) : update(k, next))}
+              />
+            ) : isBtcSats ? (
+              <BtcSatsField
+                name={`sats-${tool.name}-${k}`}
+                sats={typeof v === 'number' ? v : null}
+                onSats={(next) => (next === null ? del(k) : update(k, next))}
+              />
+            ) : isMsat ? (
+              <MsatField
+                name={`msat-${tool.name}-${k}`}
+                msat={typeof v === 'number' ? v : null}
+                onMsat={(next) => (next === null ? del(k) : update(k, next))}
+              />
+            ) : isGenericAtomic ? (
+              <AtomicDisplayField
+                name={`amt-${tool.name}-${k}`}
+                atomic={typeof v === 'string' ? v : ''}
+                decimals={k === 'lamports' ? 9 : 6}
+                symbol={k === 'lamports' ? 'SOL' : 'token'}
+                onAtomic={(next) => (next === null ? del(k) : update(k, next))}
+              />
+            ) : enumVals && (sch?.type === 'string' || sch?.type === 'integer') ? (
+              <select
+                className="select"
+                value={v === undefined || v === null ? '' : String(v)}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (!raw) return isReq ? update(k, sch?.type === 'integer' ? 0 : '') : del(k);
+                  if (sch?.type === 'integer') {
+                    const n = Number.parseInt(raw, 10);
+                    if (!Number.isFinite(n)) return;
+                    update(k, n);
+                    return;
+                  }
+                  update(k, raw);
+                }}
+              >
+                {!isReq ? <option value="">(default)</option> : null}
+                {enumVals.map((ev: any) => (
+                  <option key={String(ev)} value={String(ev)}>
+                    {String(ev)}
+                  </option>
+                ))}
+              </select>
+            ) : sch?.type === 'boolean' ? (
+              isReq ? (
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(v)}
+                    onChange={(e) => update(k, e.target.checked)}
+                  />
+                  {k}
+                </label>
+              ) : (
+                <select
+                  className="select"
+                  value={typeof v === 'boolean' ? (v ? 'true' : 'false') : ''}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (!raw) return del(k);
+                    update(k, raw === 'true');
+                  }}
+                >
+                  <option value="">(default)</option>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              )
+            ) : sch?.type === 'integer' ? (
+              <input
+                className="input mono"
+                type="number"
+                value={typeof v === 'number' ? String(v) : ''}
+                placeholder={isReq ? 'required' : 'optional'}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (!raw.trim()) return isReq ? update(k, 0) : del(k);
+                  const n = Number.parseInt(raw, 10);
+                  if (!Number.isFinite(n)) return;
+                  update(k, n);
+                }}
+              />
+            ) : sch?.type === 'string' ? (
+              <input
+                className="input mono"
+                type="text"
+                value={typeof v === 'string' ? v : ''}
+                list={isChannel ? 'collin-channels' : undefined}
+                placeholder={isReq ? 'required' : 'optional'}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (!raw.trim()) return isReq ? update(k, '') : del(k);
+                  update(k, raw);
+                }}
+              />
+            ) : sch?.type === 'array' ? (
+              <textarea
+                className="textarea mono"
+                value={Array.isArray(v) ? v.join('\n') : ''}
+                placeholder={isReq ? 'one per line (required)' : 'one per line (optional)'}
+                onChange={(e) => {
+                  const lines = parseLines(e.target.value);
+                  if (lines.length === 0) return isReq ? update(k, []) : del(k);
+                  update(k, lines);
+                }}
+              />
+            ) : (
+              <textarea
+                className="textarea mono"
+                value={typeof v === 'string' ? v : v !== undefined ? JSON.stringify(v, null, 2) : ''}
+                placeholder="JSON"
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (!raw.trim()) return isReq ? update(k, {}) : del(k);
+                  try {
+                    update(k, JSON.parse(raw));
+                  } catch (_e) {
+                    // Keep raw string if it isn't JSON (useful for secret: handles).
+                    update(k, raw);
+                  }
+                }}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AtomicDisplayField({
+  name,
+  atomic,
+  decimals,
+  symbol,
+  onAtomic,
+}: {
+  name: string;
+  atomic: string;
+  decimals: number;
+  symbol: string;
+  onAtomic: (next: string | null) => void;
+}) {
+  const [mode, setMode] = useState<'display' | 'atomic'>('display');
+  const [display, setDisplay] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (mode !== 'display') return;
+    setDisplay(atomicToDecimal(atomic, decimals));
+  }, [atomic, decimals, mode]);
+
+  return (
+    <div className="amt">
+      <div className="row">
+        <label className="seg">
+          <input type="radio" name={name} checked={mode === 'display'} onChange={() => setMode('display')} />
+          <span>{symbol}</span>
+        </label>
+        <label className="seg">
+          <input type="radio" name={name} checked={mode === 'atomic'} onChange={() => setMode('atomic')} />
+          <span>atomic</span>
+        </label>
+      </div>
+      {mode === 'display' ? (
+        <>
+          <input
+            className="input mono"
+            type="text"
+            value={display}
+            placeholder={`0.${'0'.repeat(Math.min(2, decimals))}`}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setDisplay(raw);
+              if (!raw.trim()) {
+                setErr(null);
+                onAtomic(null);
+                return;
+              }
+              const r = decimalToAtomic(raw, decimals);
+              if (!r || !r.ok) {
+                setErr(r ? r.error : 'invalid');
+                return;
+              }
+              setErr(null);
+              onAtomic(r.atomic);
+            }}
+          />
+          <div className="muted small">
+            atomic: <span className="mono">{atomic || '—'}</span>
+          </div>
+        </>
+      ) : (
+        <input
+          className="input mono"
+          type="text"
+          value={atomic}
+          placeholder="atomic digits"
+          onChange={(e) => {
+            const raw = e.target.value.trim();
+            if (!raw) return onAtomic(null);
+            if (!/^[0-9]+$/.test(raw)) {
+              setErr('atomic must be digits');
+              return;
+            }
+            setErr(null);
+            onAtomic(raw);
+          }}
+        />
+      )}
+      {err ? <div className="alert bad">{err}</div> : null}
+    </div>
+  );
+}
+
+function BtcSatsField({ name, sats, onSats }: { name: string; sats: number | null; onSats: (next: number | null) => void }) {
+  const [unit, setUnit] = useState<'BTC' | 'sats'>('BTC');
+  const [display, setDisplay] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (sats === null || sats === undefined) return;
+    if (unit === 'BTC') setDisplay(satsToBtcDisplay(sats));
+    else setDisplay(String(sats));
+  }, [sats, unit]);
+
+  return (
+    <div className="amt">
+      <div className="row">
+        <label className="seg">
+          <input type="radio" name={name} checked={unit === 'BTC'} onChange={() => setUnit('BTC')} />
+          <span>BTC</span>
+        </label>
+        <label className="seg">
+          <input type="radio" name={name} checked={unit === 'sats'} onChange={() => setUnit('sats')} />
+          <span>sats</span>
+        </label>
+      </div>
+      <input
+        className="input mono"
+        type="text"
+        value={display}
+        placeholder={unit === 'BTC' ? '0.001' : '10000'}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setDisplay(raw);
+          if (!raw.trim()) {
+            setErr(null);
+            onSats(null);
+            return;
+          }
+          if (unit === 'sats') {
+            if (!/^[0-9]+$/.test(raw.trim())) {
+              setErr('sats must be digits');
+              return;
+            }
+            const n = Number.parseInt(raw.trim(), 10);
+            if (!Number.isFinite(n) || !Number.isSafeInteger(n)) {
+              setErr('invalid sats');
+              return;
+            }
+            setErr(null);
+            onSats(n);
+            return;
+          }
+          const r = btcDisplayToSats(raw);
+          if (!r || !r.ok) {
+            setErr(r ? r.error : 'invalid');
+            return;
+          }
+          setErr(null);
+          onSats(r.atomic);
+        }}
+      />
+      {typeof sats === 'number' ? (
+        <div className="muted small">
+          sats: <span className="mono">{sats}</span>
+        </div>
+      ) : null}
+      {err ? <div className="alert bad">{err}</div> : null}
+    </div>
+  );
+}
+
+function MsatField({ name, msat, onMsat }: { name: string; msat: number | null; onMsat: (next: number | null) => void }) {
+  const [unit, setUnit] = useState<'msat' | 'sats'>('sats');
+  const [display, setDisplay] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (msat === null || msat === undefined) return;
+    if (unit === 'msat') setDisplay(String(msat));
+    else setDisplay(String(Math.trunc(msat / 1000)));
+  }, [msat, unit]);
+
+  return (
+    <div className="amt">
+      <div className="row">
+        <label className="seg">
+          <input type="radio" name={name} checked={unit === 'sats'} onChange={() => setUnit('sats')} />
+          <span>sats</span>
+        </label>
+        <label className="seg">
+          <input type="radio" name={name} checked={unit === 'msat'} onChange={() => setUnit('msat')} />
+          <span>msat</span>
+        </label>
+      </div>
+      <input
+        className="input mono"
+        type="text"
+        value={display}
+        placeholder={unit === 'sats' ? '10000' : '10000000'}
+        onChange={(e) => {
+          const raw = e.target.value.trim();
+          setDisplay(raw);
+          if (!raw) {
+            setErr(null);
+            onMsat(null);
+            return;
+          }
+          if (!/^[0-9]+$/.test(raw)) {
+            setErr('digits only');
+            return;
+          }
+          const n = Number.parseInt(raw, 10);
+          if (!Number.isFinite(n) || !Number.isSafeInteger(n)) {
+            setErr('invalid number');
+            return;
+          }
+          const out = unit === 'sats' ? n * 1000 : n;
+          setErr(null);
+          onMsat(out);
+        }}
+      />
+      {err ? <div className="alert bad">{err}</div> : null}
+    </div>
   );
 }
 

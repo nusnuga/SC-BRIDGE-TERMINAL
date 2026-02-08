@@ -532,6 +532,80 @@
   accent-color: var(--a);
 }
 
+.check.small {
+  font-size: 11px;
+}
+
+.alert {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.alert.bad {
+  border-color: rgba(244, 63, 94, 0.32);
+  background: rgba(244, 63, 94, 0.08);
+}
+.alert.warn {
+  border-color: rgba(249, 115, 22, 0.32);
+  background: rgba(249, 115, 22, 0.08);
+}
+
+.toolhelp {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toolform {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.field {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.field-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.amt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.consoleout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.details summary {
+  cursor: pointer;
+}
+
+.rowitem.bad {
+  border-color: rgba(244, 63, 94, 0.28);
+  background: rgba(244, 63, 94, 0.06);
+}
+
 /* Responsive: collapse to 1 column; nav/inspector become drawers */
 @media (max-width: 980px) {
   .shell {
@@ -574,4 +648,3 @@
     display: none;
   }
 }
-

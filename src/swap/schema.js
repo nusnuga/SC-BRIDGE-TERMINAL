@@ -100,6 +100,7 @@ export function validateSwapBody(kind, body) {
       if (body.direction !== `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`) {
         return { ok: false, error: 'rfq.direction unsupported' };
       }
+      if (!isHex(body.app_hash, 32)) return { ok: false, error: 'rfq.app_hash must be 32-byte hex' };
       if (!isPosInt(body.btc_sats)) return { ok: false, error: 'rfq.btc_sats must be a positive integer' };
       if (!isAmountString(body.usdt_amount)) return { ok: false, error: 'rfq.usdt_amount must be a decimal string' };
       if (body.sol_mint !== undefined && body.sol_mint !== null) {
@@ -120,6 +121,7 @@ export function validateSwapBody(kind, body) {
       if (body.direction !== `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`) {
         return { ok: false, error: 'quote.direction unsupported' };
       }
+      if (!isHex(body.app_hash, 32)) return { ok: false, error: 'quote.app_hash must be 32-byte hex' };
       if (!isAmountString(body.usdt_amount)) return { ok: false, error: 'quote.usdt_amount must be a decimal string' };
       if (!isPosInt(body.btc_sats)) return { ok: false, error: 'quote.btc_sats must be a positive integer' };
       if (body.sol_mint !== undefined && body.sol_mint !== null) {
@@ -183,6 +185,7 @@ export function validateSwapBody(kind, body) {
       if (body.direction !== `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`) {
         return { ok: false, error: 'terms.direction unsupported' };
       }
+      if (!isHex(body.app_hash, 32)) return { ok: false, error: 'terms.app_hash must be 32-byte hex' };
       if (!isPosInt(body.btc_sats)) return { ok: false, error: 'terms.btc_sats must be a positive integer' };
       if (!isAmountString(body.usdt_amount)) return { ok: false, error: 'terms.usdt_amount must be a decimal string' };
       if (body.usdt_decimals !== undefined && !isUint(body.usdt_decimals)) {

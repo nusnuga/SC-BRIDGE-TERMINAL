@@ -16,6 +16,7 @@ import { ScBridgeClient } from '../sc-bridge/client.js';
 import { createUnsignedEnvelope, attachSignature, signUnsignedEnvelopeHex, verifySignedEnvelope } from '../protocol/signedMessage.js';
 import { validateSwapEnvelope } from '../swap/schema.js';
 import { ASSET, KIND, PAIR } from '../swap/constants.js';
+import { INTERCOMSWAP_APP_TAG, deriveIntercomswapAppHash } from '../swap/app.js';
 import { hashUnsignedEnvelope, sha256Hex } from '../swap/hash.js';
 import { hashTermsEnvelope } from '../swap/terms.js';
 import { verifySwapPrePayOnchain } from '../swap/verify.js';
@@ -738,6 +739,7 @@ export class ToolExecutor {
       const btcSats = expectInt(args, toolName, 'btc_sats', { min: 1 });
       const usdtAmount = normalizeAtomicAmount(expectString(args, toolName, 'usdt_amount', { max: 64 }), 'usdt_amount');
       const validUntil = expectOptionalInt(args, toolName, 'valid_until_unix', { min: 1 });
+      const appHash = deriveIntercomswapAppHash({ solanaProgramId: this._programId().toBase58() });
 
       const unsigned = createUnsignedEnvelope({
         v: 1,
@@ -746,6 +748,7 @@ export class ToolExecutor {
         body: {
           pair: PAIR.BTC_LN__USDT_SOL,
           direction: `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`,
+          app_hash: appHash,
           btc_sats: btcSats,
           usdt_amount: usdtAmount,
           ...(validUntil ? { valid_until_unix: validUntil } : {}),
@@ -786,6 +789,7 @@ export class ToolExecutor {
       if (!validUntil) {
         throw new Error(`${toolName}: valid_until_unix or valid_for_sec is required`);
       }
+      const appHash = deriveIntercomswapAppHash({ solanaProgramId: this._programId().toBase58() });
 
       const unsigned = createUnsignedEnvelope({
         v: 1,
@@ -795,6 +799,7 @@ export class ToolExecutor {
           rfq_id: rfqId,
           pair: PAIR.BTC_LN__USDT_SOL,
           direction: `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`,
+          app_hash: appHash,
           btc_sats: btcSats,
           usdt_amount: usdtAmount,
           valid_until_unix: validUntil,
@@ -837,6 +842,12 @@ export class ToolExecutor {
         throw new Error(`${toolName}: valid_until_unix or valid_for_sec is required`);
       }
 
+      const appHash = deriveIntercomswapAppHash({ solanaProgramId: this._programId().toBase58() });
+      const rfqAppHash = String(rfq?.body?.app_hash || '').trim().toLowerCase();
+      if (rfqAppHash !== appHash) {
+        throw new Error(`${toolName}: rfq_envelope.app_hash mismatch (wrong app/program for this channel)`);
+      }
+
       const unsigned = createUnsignedEnvelope({
         v: 1,
         kind: KIND.QUOTE,
@@ -845,6 +856,7 @@ export class ToolExecutor {
           rfq_id: rfqId,
           pair: PAIR.BTC_LN__USDT_SOL,
           direction: `${ASSET.BTC_LN}->${ASSET.USDT_SOL}`,
+          app_hash: appHash,
           btc_sats: btcSats,
           usdt_amount: usdtAmount,
           valid_until_unix: validUntil,
