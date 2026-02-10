@@ -190,7 +190,7 @@ export async function lnConnect(opts, { peer }) {
   return lnClnCli({ ...opts, args: ['connect', p] });
 }
 
-export async function lnFundChannel(opts, { nodeId, amountSats, block = true }) {
+export async function lnFundChannel(opts, { nodeId, amountSats, privateFlag = false, satPerVbyte = null, block = true }) {
   const id = String(nodeId || '').trim();
   const amt = Number(amountSats);
   if (!id) throw new Error('Missing nodeId');
@@ -198,11 +198,21 @@ export async function lnFundChannel(opts, { nodeId, amountSats, block = true }) 
 
   if (opts.impl === 'lnd') {
     const args = ['openchannel', '--node_key', id, '--local_amt', String(amt)];
+    if (privateFlag) args.push('--private');
+    if (Number.isInteger(satPerVbyte) && satPerVbyte > 0) args.push('--sat_per_vbyte', String(Math.trunc(satPerVbyte)));
     if (block) args.push('--block');
     return lnLndCli({ ...opts, args });
   }
 
-  return lnClnCli({ ...opts, args: ['fundchannel', id, String(amt)] });
+  // For CLN, use named args so we can safely plumb optional fields without relying on positional ordering.
+  const args = ['fundchannel', `id=${id}`, `amount=${String(amt)}`];
+  if (privateFlag) args.push('announce=false');
+  if (Number.isInteger(satPerVbyte) && satPerVbyte > 0) {
+    // CLN expects feerate as "<n>perkw" (sats per 1000 weight units). 1 vB = 4 weight units -> 1kw = 250 vB.
+    const perkw = Math.max(1, Math.trunc(satPerVbyte) * 250);
+    args.push(`feerate=${perkw}perkw`);
+  }
+  return lnClnCli({ ...opts, args });
 }
 
 export async function lnInvoice(opts, { amountMsat, label, description, expirySec = null }) {

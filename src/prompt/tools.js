@@ -735,6 +735,7 @@ export const INTERCOMSWAP_TOOLS = [
       node_id: { type: 'string', minLength: 66, maxLength: 66, pattern: '^[0-9a-fA-F]{66}$' },
       amount_sats: { type: 'integer', minimum: 1_000, maximum: 10_000_000_000 },
       private: { type: 'boolean', description: 'Prefer private channels for swaps.' },
+      sat_per_vbyte: { type: 'integer', minimum: 1, maximum: 10_000, description: 'Optional fee rate for the on-chain funding transaction.' },
     },
     required: ['node_id', 'amount_sats'],
   }),

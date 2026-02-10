@@ -2675,14 +2675,22 @@ export class ToolExecutor {
       return lnConnect(this.ln, { peer });
     }
     if (toolName === 'intercomswap_ln_fundchannel') {
-      assertAllowedKeys(args, toolName, ['node_id', 'amount_sats', 'private']);
+      assertAllowedKeys(args, toolName, ['node_id', 'amount_sats', 'private', 'sat_per_vbyte']);
       requireApproval(toolName, autoApprove);
       const nodeId = normalizeHex33(expectString(args, toolName, 'node_id', { min: 66, max: 66 }), 'node_id');
       const amountSats = expectInt(args, toolName, 'amount_sats', { min: 1000 });
       const privateFlag = 'private' in args ? expectBool(args, toolName, 'private') : false;
-      if (dryRun) return { type: 'dry_run', tool: toolName, node_id: nodeId, amount_sats: amountSats, private: privateFlag };
-      // Note: privacy support is implementation-specific; we enforce the arg shape, but do not currently plumb it.
-      return lnFundChannel(this.ln, { nodeId, amountSats, block: true });
+      const satPerVbyte = expectOptionalInt(args, toolName, 'sat_per_vbyte', { min: 1, max: 10_000 });
+      if (dryRun)
+        return {
+          type: 'dry_run',
+          tool: toolName,
+          node_id: nodeId,
+          amount_sats: amountSats,
+          private: privateFlag,
+          sat_per_vbyte: satPerVbyte,
+        };
+      return lnFundChannel(this.ln, { nodeId, amountSats, privateFlag, satPerVbyte, block: true });
     }
     if (toolName === 'intercomswap_ln_invoice_create') {
       assertAllowedKeys(args, toolName, ['amount_msat', 'label', 'description', 'expiry_sec']);

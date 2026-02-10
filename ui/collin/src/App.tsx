@@ -36,7 +36,7 @@ function App() {
 
 	  const [selected, setSelected] = useState<any>(null);
 
-	  const [promptInput, setPromptInput] = useState('');
+		  const [promptInput, setPromptInput] = useState('');
 	  const [promptChat, setPromptChat] = useState<Array<{ id: string; role: 'user' | 'assistant'; ts: number; text: string }>>([]);
 	  const promptChatListRef = useRef<HTMLDivElement | null>(null);
 	  const [toolFilter, setToolFilter] = useState('');
@@ -146,6 +146,7 @@ function App() {
   const [lnChannelNodeId, setLnChannelNodeId] = useState<string>('');
   const [lnChannelAmountSats, setLnChannelAmountSats] = useState<number>(1_000_000);
   const [lnChannelPrivate, setLnChannelPrivate] = useState<boolean>(true);
+  const [lnChannelSatPerVbyte, setLnChannelSatPerVbyte] = useState<number>(2);
 
   // Stack observer: lightweight operator signal when a previously-ready stack degrades.
   const stackOkRef = useRef<boolean | null>(null);
@@ -1806,17 +1807,17 @@ function App() {
     }
   }
 
-	  async function copyToClipboard(label: string, value: any) {
-	    const s = String(value ?? '').trim();
-	    if (!s) return;
-	    try {
-	      await navigator.clipboard.writeText(s);
-	      pushToast('success', `Copied ${label}`);
-	      void appendPromptEvent({ type: 'ui', ts: Date.now(), message: `copied ${label}` }, { persist: false });
-	    } catch (_e) {}
-	  }
+			  async function copyToClipboard(label: string, value: any) {
+			    const s = String(value ?? '').trim();
+			    if (!s) return;
+			    try {
+			      await navigator.clipboard.writeText(s);
+			      pushToast('success', `Copied ${label}`);
+			      void appendPromptEvent({ type: 'ui', ts: Date.now(), message: `copied ${label}` }, { persist: false });
+			    } catch (_e) {}
+			  }
 
-  function deriveKindTrade(msg: any) {
+	  function deriveKindTrade(msg: any) {
     if (!msg || typeof msg !== 'object') return { kind: '', trade_id: '' };
     const kind = typeof msg.kind === 'string' ? msg.kind : '';
     const trade_id = typeof msg.trade_id === 'string' ? msg.trade_id : '';
@@ -3932,6 +3933,17 @@ function App() {
                       }}
                       placeholder="amount sats"
                     />
+                    <input
+                      className="input mono"
+                      style={{ maxWidth: 160 }}
+                      value={String(lnChannelSatPerVbyte)}
+                      onChange={(e) => {
+                        const n = Number.parseInt(e.target.value, 10);
+                        if (Number.isFinite(n)) setLnChannelSatPerVbyte(Math.max(0, Math.trunc(n)));
+                      }}
+                      placeholder="sat/vB"
+                      title="Fee rate for the on-chain funding transaction (sat/vB)."
+                    />
                     <label className="check">
                       <input
                         type="checkbox"
@@ -3946,15 +3958,25 @@ function App() {
                       onClick={async () => {
                         const node_id = lnChannelNodeId.trim();
                         const amount_sats = lnChannelAmountSats;
+                        const sat_per_vbyte = Number.isFinite(lnChannelSatPerVbyte) ? Math.trunc(lnChannelSatPerVbyte) : 0;
                         const ok =
                           autoApprove ||
-                          window.confirm(`Open LN channel?\n\nnode_id: ${node_id}\namount_sats: ${amount_sats}`);
+                          window.confirm(
+                            `Open LN channel?\n\nnode_id: ${node_id}\namount_sats: ${amount_sats}\nprivate: ${lnChannelPrivate ? 'yes' : 'no'}\nfee: ${
+                              sat_per_vbyte > 0 ? `${sat_per_vbyte} sat/vB` : '(default)'
+                            }`
+                          );
                         if (!ok) return;
                         await runPromptStream({
                           prompt: JSON.stringify({
                             type: 'tool',
                             name: 'intercomswap_ln_fundchannel',
-                            arguments: { node_id, amount_sats, private: lnChannelPrivate },
+                            arguments: {
+                              node_id,
+                              amount_sats,
+                              private: lnChannelPrivate,
+                              sat_per_vbyte: sat_per_vbyte > 0 ? sat_per_vbyte : undefined,
+                            },
                           }),
                           session_id: sessionId,
                           auto_approve: true,
@@ -5300,7 +5322,7 @@ function BtcSatsField({ name, sats, onSats }: { name: string; sats: number | nul
       />
       {typeof sats === 'number' ? (
         <div className="muted small">
-          sats: <span className="mono">{Math.trunc(sats)}</span> ({satsToBtcDisplay(Math.trunc(sats))} BTC)
+          BTC: <span className="mono">{satsToBtcDisplay(Math.trunc(sats))}</span> (<span className="mono">{Math.trunc(sats)}</span> sats)
         </div>
       ) : null}
       {err ? <div className="alert bad">{err}</div> : null}
