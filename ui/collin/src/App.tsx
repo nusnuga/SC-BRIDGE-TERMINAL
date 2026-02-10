@@ -117,6 +117,8 @@ function App() {
   const [offerMaxSolRefundWindowSec, setOfferMaxSolRefundWindowSec] = useState<number>(7 * 24 * 3600);
   const [offerValidUntilUnix, setOfferValidUntilUnix] = useState<number>(() => Math.floor(Date.now() / 1000) + 72 * 3600);
   const [offerBusy, setOfferBusy] = useState(false);
+  const [offerRunAsBot, setOfferRunAsBot] = useState<boolean>(false);
+  const [offerBotIntervalSec, setOfferBotIntervalSec] = useState<number>(60);
 
   // Sell BTC: RFQ poster (binding direction BTC_LN->USDT_SOL).
   const [rfqChannel, setRfqChannel] = useState<string>('0000intercomswapbtcusdt');
@@ -130,6 +132,8 @@ function App() {
   const [rfqMaxSolRefundWindowSec, setRfqMaxSolRefundWindowSec] = useState<number>(7 * 24 * 3600);
   const [rfqValidUntilUnix, setRfqValidUntilUnix] = useState<number>(() => Math.floor(Date.now() / 1000) + 72 * 3600);
   const [rfqBusy, setRfqBusy] = useState(false);
+  const [rfqRunAsBot, setRfqRunAsBot] = useState<boolean>(false);
+  const [rfqBotIntervalSec, setRfqBotIntervalSec] = useState<number>(60);
 
   const [leaveChannel, setLeaveChannel] = useState<string>('');
   const [leaveBusy, setLeaveBusy] = useState(false);
@@ -237,9 +241,20 @@ function App() {
   }
 
   const myOfferPosts = useMemo(() => {
-    // Offer announcements we posted locally (derived from prompt tool results).
+    // Offer announcements we posted locally.
+    // Primary source: prompt tool results (works even when sc/stream isn't connected yet).
+    // Secondary source: outbound sidechannel log (covers autopost/bots which don't create prompt history entries).
     const out: any[] = [];
     const seen = new Set<string>();
+    const envSigKey = (env: any) => {
+      try {
+        const signer = String(env?.signer || '').trim().toLowerCase();
+        const sig = String(env?.sig || '').trim().toLowerCase();
+        return signer && sig ? `${signer}:${sig}` : '';
+      } catch (_e) {
+        return '';
+      }
+    };
     for (const e of promptEvents) {
       try {
         const cj = finalEventContentJson(e);
@@ -248,7 +263,12 @@ function App() {
         const env = cj.envelope;
         if (!env || typeof env !== 'object') continue;
         const id = String(cj.svc_announce_id || '').trim();
-        const key = id || String(env.trade_id || env.tradeId || '') || String((e as any).db_id || '') || String(e.ts || '');
+        const key =
+          id ||
+          envSigKey(env) ||
+          String(env.trade_id || env.tradeId || '') ||
+          String((e as any).db_id || '') ||
+          String(e.ts || '');
         if (!key) continue;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -268,14 +288,39 @@ function App() {
         });
       } catch (_e) {}
     }
+    // Include outbound sc events (autopost/bots).
+    for (const e of scEvents) {
+      try {
+        if (String((e as any)?.kind || '') !== 'swap.svc_announce') continue;
+        const signer = evtSignerHex(e);
+        if (!localPeerPubkeyHex || signer !== localPeerPubkeyHex) continue;
+        const env = (e as any)?.message;
+        const key = envSigKey(env) || String((e as any).db_id || (e as any).seq || (e as any).ts || '');
+        if (!key) continue;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(e);
+      } catch (_e) {}
+    }
+    out.sort((a, b) => Number(b?.ts || 0) - Number(a?.ts || 0));
     return out;
-  }, [promptEvents]);
+  }, [promptEvents, scEvents, localPeerPubkeyHex]);
 
   const myRfqPosts = useMemo(() => {
-    // RFQs we posted locally (derived from prompt tool results), so operators can see them
-    // even when no peers are connected / no inbound echo exists.
+    // RFQs we posted locally.
+    // Primary source: prompt tool results (works even when sc/stream isn't connected yet).
+    // Secondary source: outbound sidechannel log (covers autopost/bots).
     const out: any[] = [];
     const seen = new Set<string>();
+    const envSigKey = (env: any) => {
+      try {
+        const signer = String(env?.signer || '').trim().toLowerCase();
+        const sig = String(env?.sig || '').trim().toLowerCase();
+        return signer && sig ? `${signer}:${sig}` : '';
+      } catch (_e) {
+        return '';
+      }
+    };
     for (const e of promptEvents) {
       try {
         const cj = finalEventContentJson(e);
@@ -284,7 +329,12 @@ function App() {
         const env = cj.envelope;
         if (!env || typeof env !== 'object') continue;
         const rfqId = String(cj.rfq_id || '').trim();
-        const key = rfqId || String(env.trade_id || env.tradeId || '') || String((e as any).db_id || '') || String(e.ts || '');
+        const key =
+          rfqId ||
+          envSigKey(env) ||
+          String(env.trade_id || env.tradeId || '') ||
+          String((e as any).db_id || '') ||
+          String(e.ts || '');
         if (!key) continue;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -300,8 +350,22 @@ function App() {
         });
       } catch (_e) {}
     }
+    for (const e of scEvents) {
+      try {
+        if (String((e as any)?.kind || '') !== 'swap.rfq') continue;
+        const signer = evtSignerHex(e);
+        if (!localPeerPubkeyHex || signer !== localPeerPubkeyHex) continue;
+        const env = (e as any)?.message;
+        const key = envSigKey(env) || String((e as any).db_id || (e as any).seq || (e as any).ts || '');
+        if (!key) continue;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(e);
+      } catch (_e) {}
+    }
+    out.sort((a, b) => Number(b?.ts || 0) - Number(a?.ts || 0));
     return out;
-  }, [promptEvents]);
+  }, [promptEvents, scEvents, localPeerPubkeyHex]);
 
   const inviteEvents = useMemo(() => {
     return filteredScEvents.filter((e) => String(e.kind || '') === 'swap.swap_invite');
@@ -319,10 +383,10 @@ function App() {
 
   const sellUsdtFeedItems = useMemo(() => {
     const out: any[] = [];
-    out.push({ _t: 'header', id: 'h:myoffers', title: 'My Offers', count: myOfferPosts.length });
-    for (const e of myOfferPosts) out.push({ _t: 'offer', id: `my:${e.svc_announce_id || e.trade_id || e.ts}`, evt: e, badge: 'outbox' });
     out.push({ _t: 'header', id: 'h:inboxrfqs', title: 'RFQ Inbox', count: rfqEvents.length });
     for (const e of rfqEvents) out.push({ _t: 'rfq', id: `in:${e.db_id || e.seq || e.ts}`, evt: e });
+    out.push({ _t: 'header', id: 'h:myoffers', title: 'My Offers', count: myOfferPosts.length });
+    for (const e of myOfferPosts) out.push({ _t: 'offer', id: `my:${e.svc_announce_id || e.trade_id || e.ts}`, evt: e, badge: 'outbox' });
     return out;
   }, [myOfferPosts, rfqEvents]);
 
@@ -646,6 +710,91 @@ function App() {
     pushToast('error', `${actionLabel}: stack not ready\n\nMissing:\n${missing}`);
   }
 
+  async function recoverClaimForTrade(trade: any) {
+    if (!stackGate.ok) return void stackBlockedToast('Claim');
+    const trade_id = String(trade?.trade_id || '').trim();
+    if (!trade_id) return void pushToast('error', 'Claim: missing trade_id');
+    const state = String(trade?.state || '').trim();
+    const preimage = String(trade?.ln_preimage_hex || '').trim();
+
+    if (state === 'claimed') return void pushToast('success', `Already claimed (${trade_id})`);
+    if (state === 'refunded') return void pushToast('info', `Already refunded (${trade_id})`);
+    if (state !== 'ln_paid') return void pushToast('info', `Not claimable yet (state=${state || '?'})`);
+    if (!preimage) return void pushToast('error', `Cannot claim: missing LN preimage in receipts (${trade_id})`);
+
+    try {
+      if (toolRequiresApproval('intercomswap_swaprecover_claim') && !autoApprove) {
+        const ok = window.confirm(`Claim escrow now?\n\ntrade_id: ${trade_id}`);
+        if (!ok) return;
+      }
+      await runToolFinal('intercomswap_swaprecover_claim', { trade_id }, { auto_approve: true });
+      pushToast('success', `Claim submitted (${trade_id})`);
+      void loadTradesPage({ reset: true });
+      void loadOpenClaimsPage({ reset: true });
+      void loadOpenRefundsPage({ reset: true });
+    } catch (err: any) {
+      pushToast('error', err?.message || String(err));
+    }
+  }
+
+  async function recoverRefundForTrade(trade: any) {
+    if (!stackGate.ok) return void stackBlockedToast('Refund');
+    const trade_id = String(trade?.trade_id || '').trim();
+    if (!trade_id) return void pushToast('error', 'Refund: missing trade_id');
+    const state = String(trade?.state || '').trim();
+    const refundAfterRaw = trade?.sol_refund_after_unix;
+    const refundAfter =
+      typeof refundAfterRaw === 'number'
+        ? refundAfterRaw
+        : typeof refundAfterRaw === 'string' && /^[0-9]+$/.test(refundAfterRaw.trim())
+          ? Number.parseInt(refundAfterRaw.trim(), 10)
+          : null;
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    if (state === 'refunded') return void pushToast('success', `Already refunded (${trade_id})`);
+    if (state === 'claimed') return void pushToast('info', `Already claimed (${trade_id})`);
+    if (state !== 'escrow') return void pushToast('info', `Not refundable yet (state=${state || '?'})`);
+    if (!refundAfter || !Number.isFinite(refundAfter) || refundAfter <= 0) {
+      return void pushToast('info', `Refund not yet available (missing refund_after_unix) (${trade_id})`);
+    }
+    if (nowSec < refundAfter) {
+      return void pushToast(
+        'info',
+        `Refund available after ${unixSecToUtcIso(refundAfter)} (${refundAfter}).\n\nWait: ${secToHuman(refundAfter - nowSec)}`
+      );
+    }
+
+    try {
+      if (toolRequiresApproval('intercomswap_swaprecover_refund') && !autoApprove) {
+        const ok = window.confirm(`Refund escrow now?\n\ntrade_id: ${trade_id}`);
+        if (!ok) return;
+      }
+      await runToolFinal('intercomswap_swaprecover_refund', { trade_id }, { auto_approve: true });
+      pushToast('success', `Refund submitted (${trade_id})`);
+      void loadTradesPage({ reset: true });
+      void loadOpenRefundsPage({ reset: true });
+      void loadOpenClaimsPage({ reset: true });
+    } catch (err: any) {
+      pushToast('error', err?.message || String(err));
+    }
+  }
+
+  async function stopAutopostJob(nameRaw: string) {
+    const name = String(nameRaw || '').trim();
+    if (!name) return;
+    try {
+      if (toolRequiresApproval('intercomswap_autopost_stop') && !autoApprove) {
+        const ok = window.confirm(`Stop bot?\n\n${name}`);
+        if (!ok) return;
+      }
+      await runToolFinal('intercomswap_autopost_stop', { name }, { auto_approve: true });
+      pushToast('success', `Bot stopped (${name})`);
+      void refreshPreflight();
+    } catch (err: any) {
+      pushToast('error', err?.message || String(err));
+    }
+  }
+
   async function ensureLnRegtestChannel() {
     const lnBackend = String(envInfo?.ln?.backend || '');
     const lnNetwork = String(envInfo?.ln?.network || '');
@@ -741,20 +890,39 @@ function App() {
       setRfqTradeId(`rfq-${Date.now()}`);
       setRfqBtcSats(btcSats);
       setRfqUsdtAtomic(usdtAmount);
-      if (Number.isFinite(maxPlatform)) setRfqMaxPlatformFeeBps(Math.max(0, Math.trunc(maxPlatform)));
-      if (Number.isFinite(maxTrade)) setRfqMaxTradeFeeBps(Math.max(0, Math.trunc(maxTrade)));
-      if (Number.isFinite(maxTotal)) setRfqMaxTotalFeeBps(Math.max(0, Math.trunc(maxTotal)));
       const SOL_REFUND_MIN_SEC = 3600;
       const SOL_REFUND_MAX_SEC = 7 * 24 * 3600;
-      if (Number.isFinite(minWin)) {
-        setRfqMinSolRefundWindowSec(Math.min(SOL_REFUND_MAX_SEC, Math.max(SOL_REFUND_MIN_SEC, Math.trunc(minWin))));
+
+      const warnings: string[] = [];
+      const clampBps = (raw: number, cap: number, label: string) => {
+        const n = Math.trunc(raw);
+        const c = Math.max(0, Math.min(cap, n));
+        if (c !== n) warnings.push(`${label} fee cap clamped: ${n} -> ${c} bps`);
+        return c;
+      };
+      const clampSec = (raw: number, label: string) => {
+        const n = Math.trunc(raw);
+        const c = Math.min(SOL_REFUND_MAX_SEC, Math.max(SOL_REFUND_MIN_SEC, n));
+        if (c !== n) warnings.push(`${label} sol window clamped: ${n} -> ${c} sec`);
+        return c;
+      };
+
+      if (Number.isFinite(maxPlatform)) setRfqMaxPlatformFeeBps(clampBps(maxPlatform, 500, 'platform'));
+      if (Number.isFinite(maxTrade)) setRfqMaxTradeFeeBps(clampBps(maxTrade, 1000, 'trade'));
+      if (Number.isFinite(maxTotal)) setRfqMaxTotalFeeBps(clampBps(maxTotal, 1500, 'total'));
+
+      let nextMinWin = Number.isFinite(minWin) ? clampSec(minWin, 'min') : rfqMinSolRefundWindowSec;
+      let nextMaxWin = Number.isFinite(maxWin) ? clampSec(maxWin, 'max') : rfqMaxSolRefundWindowSec;
+      if (nextMinWin > nextMaxWin) {
+        warnings.push(`sol window invalid (min > max); adjusted max to ${nextMinWin}s`);
+        nextMaxWin = nextMinWin;
       }
-      if (Number.isFinite(maxWin)) {
-        setRfqMaxSolRefundWindowSec(Math.min(SOL_REFUND_MAX_SEC, Math.max(SOL_REFUND_MIN_SEC, Math.trunc(maxWin))));
-      }
+      setRfqMinSolRefundWindowSec(nextMinWin);
+      setRfqMaxSolRefundWindowSec(nextMaxWin);
       setRfqValidUntilUnix(until);
 
       setActiveTab('sell_btc');
+      if (warnings.length > 0) pushToast('info', warnings.join('\n'), { ttlMs: 10_000 });
       pushToast('info', 'Offer loaded into New RFQ. Review then click “Post RFQ”.', { ttlMs: 6500 });
     } catch (e: any) {
       pushToast('error', e?.message || String(e));
@@ -818,11 +986,10 @@ function App() {
 
     setOfferBusy(true);
     try {
-      const args = {
+      const baseArgs = {
         channels,
         name: autoName,
         rfq_channels: channels,
-        valid_until_unix: offerValidUntilUnix,
         offers: [
           {
             pair: 'BTC_LN/USDT_SOL',
@@ -838,11 +1005,35 @@ function App() {
           },
         ],
       };
-      const out = await runToolFinal('intercomswap_offer_post', args, { auto_approve: true });
-      const cj = out?.content_json;
-      if (cj && typeof cj === 'object' && cj.type === 'error') throw new Error(String(cj.error || 'offer_post failed'));
-      const id = String(cj?.svc_announce_id || '').trim();
-      pushToast('success', `Offer posted${id ? ` (${id.slice(0, 12)}…)` : ''}`);
+
+      if (!offerRunAsBot) {
+        const args = { ...baseArgs, valid_until_unix: offerValidUntilUnix };
+        const out = await runToolFinal('intercomswap_offer_post', args, { auto_approve: true });
+        const cj = out?.content_json;
+        if (cj && typeof cj === 'object' && cj.type === 'error') throw new Error(String(cj.error || 'offer_post failed'));
+        const id = String(cj?.svc_announce_id || '').trim();
+        pushToast('success', `Offer posted${id ? ` (${id.slice(0, 12)}…)` : ''}`);
+      } else {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const ttlSec = Math.max(10, Math.min(7 * 24 * 3600, Math.trunc(offerValidUntilUnix - nowSec)));
+        const safeLabel = autoName.replaceAll(/[^A-Za-z0-9._-]/g, '_').slice(0, 28);
+        const botName = `offer_${safeLabel}_${Date.now()}`.slice(0, 64);
+
+        if (toolRequiresApproval('intercomswap_autopost_start') && !autoApprove) {
+          const ok = window.confirm(`Start offer bot now?\n\nname: ${botName}\ninterval_sec: ${offerBotIntervalSec}\nttl_sec: ${ttlSec}`);
+          if (!ok) return;
+        }
+
+        const out = await runToolFinal(
+          'intercomswap_autopost_start',
+          { name: botName, tool: 'intercomswap_offer_post', interval_sec: offerBotIntervalSec, ttl_sec: ttlSec, args: baseArgs },
+          { auto_approve: true }
+        );
+        const cj = out?.content_json;
+        if (cj && typeof cj === 'object' && cj.type === 'error') throw new Error(String(cj.error || 'autopost_start failed'));
+        pushToast('success', `Offer bot started (${botName})`);
+        void refreshPreflight();
+      }
     } catch (e: any) {
       pushToast('error', e?.message || String(e));
     } finally {
@@ -898,7 +1089,7 @@ function App() {
 
     setRfqBusy(true);
     try {
-      const args = {
+      const baseArgs = {
         channel,
         trade_id,
         btc_sats: rfqBtcSats,
@@ -908,14 +1099,37 @@ function App() {
         max_total_fee_bps: rfqMaxTotalFeeBps,
         min_sol_refund_window_sec: rfqMinSolRefundWindowSec,
         max_sol_refund_window_sec: rfqMaxSolRefundWindowSec,
-        valid_until_unix: rfqValidUntilUnix,
       };
-      const out = await runToolFinal('intercomswap_rfq_post', args, { auto_approve: true });
-      const cj = out?.content_json;
-      if (cj && typeof cj === 'object' && cj.type === 'error') throw new Error(String(cj.error || 'rfq_post failed'));
-      const id = String(cj?.rfq_id || '').trim();
-      pushToast('success', `RFQ posted${id ? ` (${id.slice(0, 12)}…)` : ''}`);
-      setRfqTradeId(`rfq-${Date.now()}`);
+
+      if (!rfqRunAsBot) {
+        const args = { ...baseArgs, valid_until_unix: rfqValidUntilUnix };
+        const out = await runToolFinal('intercomswap_rfq_post', args, { auto_approve: true });
+        const cj = out?.content_json;
+        if (cj && typeof cj === 'object' && cj.type === 'error') throw new Error(String(cj.error || 'rfq_post failed'));
+        const id = String(cj?.rfq_id || '').trim();
+        pushToast('success', `RFQ posted${id ? ` (${id.slice(0, 12)}…)` : ''}`);
+        setRfqTradeId(`rfq-${Date.now()}`);
+      } else {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const ttlSec = Math.max(10, Math.min(7 * 24 * 3600, Math.trunc(rfqValidUntilUnix - nowSec)));
+        const safeLabel = trade_id.replaceAll(/[^A-Za-z0-9._-]/g, '_').slice(0, 36);
+        const botName = `rfq_${safeLabel}_${Date.now()}`.slice(0, 64);
+
+        if (toolRequiresApproval('intercomswap_autopost_start') && !autoApprove) {
+          const ok = window.confirm(`Start RFQ bot now?\n\nname: ${botName}\ninterval_sec: ${rfqBotIntervalSec}\nttl_sec: ${ttlSec}`);
+          if (!ok) return;
+        }
+
+        const out = await runToolFinal(
+          'intercomswap_autopost_start',
+          { name: botName, tool: 'intercomswap_rfq_post', interval_sec: rfqBotIntervalSec, ttl_sec: ttlSec, args: baseArgs },
+          { auto_approve: true }
+        );
+        const cj = out?.content_json;
+        if (cj && typeof cj === 'object' && cj.type === 'error') throw new Error(String(cj.error || 'autopost_start failed'));
+        pushToast('success', `RFQ bot started (${botName})`);
+        void refreshPreflight();
+      }
     } catch (e: any) {
       pushToast('error', e?.message || String(e));
     } finally {
@@ -1113,6 +1327,11 @@ function App() {
       out.sc_info = await runDirectToolOnce('intercomswap_sc_info', {}, { auto_approve: false });
     } catch (e: any) {
       out.sc_info_error = e?.message || String(e);
+    }
+    try {
+      out.autopost = await runDirectToolOnce('intercomswap_autopost_status', {}, { auto_approve: false });
+    } catch (e: any) {
+      out.autopost_error = e?.message || String(e);
     }
     try {
       out.ln_info = await runDirectToolOnce('intercomswap_ln_info', {}, { auto_approve: false });
@@ -1846,6 +2065,9 @@ function App() {
   const solConfigOk = !preflight?.sol_config_error;
   const needSolLocalStart = solKind === 'local' && !solLocalUp;
   const needLnBootstrap = isLnRegtestDocker && (lnChannelCount < 1 || Boolean(preflight?.ln_listfunds_error));
+  const autopostJobs = Array.isArray((preflight as any)?.autopost?.jobs) ? (preflight as any).autopost.jobs : [];
+  const offerAutopostJobs = autopostJobs.filter((j: any) => String(j?.tool || '') === 'intercomswap_offer_post');
+  const rfqAutopostJobs = autopostJobs.filter((j: any) => String(j?.tool || '') === 'intercomswap_rfq_post');
 
 	  return (
 	    <div
@@ -2008,6 +2230,11 @@ function App() {
                   </button>
                 </div>
                 {lnFundingAddrErr ? <div className="alert bad">{lnFundingAddrErr}</div> : null}
+                {lnWalletSats !== null ? (
+                  <div className="muted small">
+                    wallet: <span className="mono">{satsToBtcDisplay(lnWalletSats)} BTC</span> (<span className="mono">{lnWalletSats} sats</span>)
+                  </div>
+                ) : null}
 
                 <div className="row">
                   <span className="tag">SOL</span>
@@ -2030,7 +2257,11 @@ function App() {
                   >
                     Refresh SOL
                   </button>
-                  {solBalance !== null && solBalance !== undefined ? <span className="chip">{String(solBalance)} lamports</span> : null}
+                  {solBalance !== null && solBalance !== undefined ? (
+                    <span className="chip">
+                      {lamportsToSolDisplay(solBalance)} SOL ({String(solBalance)} lamports)
+                    </span>
+                  ) : null}
                 </div>
                 {solBalanceErr ? <div className="alert bad">{solBalanceErr}</div> : null}
               </div>
@@ -2374,13 +2605,57 @@ function App() {
                 </div>
               </div>
 
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono">Run As Bot (optional)</span>
+                </div>
+                <label className="check">
+                  <input type="checkbox" checked={offerRunAsBot} onChange={(e) => setOfferRunAsBot(e.target.checked)} />
+                  repost this offer periodically
+                </label>
+                {offerRunAsBot ? (
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <span className="muted small">interval</span>
+                    <select className="select" value={String(offerBotIntervalSec)} onChange={(e) => setOfferBotIntervalSec(Number(e.target.value) || 60)}>
+                      <option value="10">10s</option>
+                      <option value="30">30s</option>
+                      <option value="60">60s</option>
+                      <option value="300">5m</option>
+                      <option value="600">10m</option>
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+
+              {offerAutopostJobs.length > 0 ? (
+                <div className="field">
+                  <div className="field-hd">
+                    <span className="mono">Offer Bots</span>
+                  </div>
+                  <div className="muted small">Running bots can be stopped without restarting the stack.</div>
+                  {offerAutopostJobs.map((j: any) => (
+                    <div key={String(j.name)} className="row" style={{ marginTop: 6 }}>
+                      <span className={`chip ${j.last_ok === false ? 'danger' : j.last_ok === true ? 'hi' : ''}`}>
+                        {String(j.name)}
+                      </span>
+                      <span className="muted small">
+                        every {secToHuman(Number(j.interval_sec || 0))} · ttl {secToHuman(Number(j.ttl_sec || 0))}
+                      </span>
+                      <button className="btn small danger" onClick={() => void stopAutopostJob(String(j.name))}>
+                        Stop
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
               <div className="row">
                 <button
                   className="btn primary"
                   onClick={postOffer}
                   disabled={offerBusy || stackOpBusy || !health?.ok || !stackGate.ok}
                 >
-                  {offerBusy ? 'Posting…' : 'Post Offer'}
+                  {offerBusy ? 'Posting…' : offerRunAsBot ? 'Start Offer Bot' : 'Post Offer'}
                 </button>
               </div>
             </Panel>
@@ -2609,13 +2884,57 @@ function App() {
                 </div>
               </div>
 
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono">Run As Bot (optional)</span>
+                </div>
+                <label className="check">
+                  <input type="checkbox" checked={rfqRunAsBot} onChange={(e) => setRfqRunAsBot(e.target.checked)} />
+                  repost this RFQ periodically
+                </label>
+                {rfqRunAsBot ? (
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <span className="muted small">interval</span>
+                    <select className="select" value={String(rfqBotIntervalSec)} onChange={(e) => setRfqBotIntervalSec(Number(e.target.value) || 60)}>
+                      <option value="10">10s</option>
+                      <option value="30">30s</option>
+                      <option value="60">60s</option>
+                      <option value="300">5m</option>
+                      <option value="600">10m</option>
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+
+              {rfqAutopostJobs.length > 0 ? (
+                <div className="field">
+                  <div className="field-hd">
+                    <span className="mono">RFQ Bots</span>
+                  </div>
+                  <div className="muted small">Running bots can be stopped without restarting the stack.</div>
+                  {rfqAutopostJobs.map((j: any) => (
+                    <div key={String(j.name)} className="row" style={{ marginTop: 6 }}>
+                      <span className={`chip ${j.last_ok === false ? 'danger' : j.last_ok === true ? 'hi' : ''}`}>
+                        {String(j.name)}
+                      </span>
+                      <span className="muted small">
+                        every {secToHuman(Number(j.interval_sec || 0))} · ttl {secToHuman(Number(j.ttl_sec || 0))}
+                      </span>
+                      <button className="btn small danger" onClick={() => void stopAutopostJob(String(j.name))}>
+                        Stop
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
               <div className="row">
                 <button
                   className="btn primary"
                   onClick={postRfq}
                   disabled={rfqBusy || stackOpBusy || !health?.ok || !stackGate.ok}
                 >
-                  {rfqBusy ? 'Posting…' : 'Post RFQ'}
+                  {rfqBusy ? 'Posting…' : rfqRunAsBot ? 'Start RFQ Bot' : 'Post RFQ'}
                 </button>
               </div>
             </Panel>
@@ -2746,7 +3065,6 @@ function App() {
                 >
                   {tradesLoading ? 'Loading…' : 'Refresh'}
                 </button>
-                {!tradesHasMore ? <span className="muted small">end</span> : null}
               </div>
 
               <VirtualList
@@ -2760,44 +3078,8 @@ function App() {
                     trade={t}
                     selected={selected?.type === 'trade' && selected?.trade?.trade_id === t?.trade_id}
                     onSelect={() => setSelected({ type: 'trade', trade: t })}
-                    onRecoverClaim={() => {
-                      if (!stackGate.ok) return void stackBlockedToast('Claim');
-                      const trade_id = String(t?.trade_id || '').trim();
-                      if (!trade_id) return;
-                      void (async () => {
-                        try {
-                          if (toolRequiresApproval('intercomswap_swaprecover_claim') && !autoApprove) {
-                            const ok = window.confirm(`Claim escrow now?\n\ntrade_id: ${trade_id}`);
-                            if (!ok) return;
-                          }
-                          await runToolFinal('intercomswap_swaprecover_claim', { trade_id }, { auto_approve: true });
-                          pushToast('success', `Claim submitted (${trade_id})`);
-                          void loadTradesPage({ reset: true });
-                          void loadOpenClaimsPage({ reset: true });
-                        } catch (err: any) {
-                          pushToast('error', err?.message || String(err));
-                        }
-                      })();
-                    }}
-                    onRecoverRefund={() => {
-                      if (!stackGate.ok) return void stackBlockedToast('Refund');
-                      const trade_id = String(t?.trade_id || '').trim();
-                      if (!trade_id) return;
-                      void (async () => {
-                        try {
-                          if (toolRequiresApproval('intercomswap_swaprecover_refund') && !autoApprove) {
-                            const ok = window.confirm(`Refund escrow now?\n\ntrade_id: ${trade_id}`);
-                            if (!ok) return;
-                          }
-                          await runToolFinal('intercomswap_swaprecover_refund', { trade_id }, { auto_approve: true });
-                          pushToast('success', `Refund submitted (${trade_id})`);
-                          void loadTradesPage({ reset: true });
-                          void loadOpenRefundsPage({ reset: true });
-                        } catch (err: any) {
-                          pushToast('error', err?.message || String(err));
-                        }
-                      })();
-                    }}
+                    onRecoverClaim={() => void recoverClaimForTrade(t)}
+                    onRecoverRefund={() => void recoverRefundForTrade(t)}
                   />
                 )}
               />
@@ -2858,23 +3140,7 @@ function App() {
                     <button
                       className="btn"
                       onClick={() => {
-                        const trade_id = String(selected?.trade?.trade_id || '').trim();
-                        if (!trade_id) return;
-                        if (!stackGate.ok) return void stackBlockedToast('Claim');
-                        void (async () => {
-                          try {
-                            if (toolRequiresApproval('intercomswap_swaprecover_claim') && !autoApprove) {
-                              const ok = window.confirm(`Claim escrow now?\n\ntrade_id: ${trade_id}`);
-                              if (!ok) return;
-                            }
-                            await runToolFinal('intercomswap_swaprecover_claim', { trade_id }, { auto_approve: true });
-                            pushToast('success', `Claim submitted (${trade_id})`);
-                            void loadTradesPage({ reset: true });
-                            void loadOpenClaimsPage({ reset: true });
-                          } catch (err: any) {
-                            pushToast('error', err?.message || String(err));
-                          }
-                        })();
+                        void recoverClaimForTrade(selected?.trade);
                       }}
                       disabled={!stackGate.ok}
                       title={!stackGate.ok ? 'Blocked until stack is ready' : ''}
@@ -2884,23 +3150,7 @@ function App() {
                     <button
                       className="btn"
                       onClick={() => {
-                        const trade_id = String(selected?.trade?.trade_id || '').trim();
-                        if (!trade_id) return;
-                        if (!stackGate.ok) return void stackBlockedToast('Refund');
-                        void (async () => {
-                          try {
-                            if (toolRequiresApproval('intercomswap_swaprecover_refund') && !autoApprove) {
-                              const ok = window.confirm(`Refund escrow now?\n\ntrade_id: ${trade_id}`);
-                              if (!ok) return;
-                            }
-                            await runToolFinal('intercomswap_swaprecover_refund', { trade_id }, { auto_approve: true });
-                            pushToast('success', `Refund submitted (${trade_id})`);
-                            void loadTradesPage({ reset: true });
-                            void loadOpenRefundsPage({ reset: true });
-                          } catch (err: any) {
-                            pushToast('error', err?.message || String(err));
-                          }
-                        })();
+                        void recoverRefundForTrade(selected?.trade);
                       }}
                       disabled={!stackGate.ok}
                       title={!stackGate.ok ? 'Blocked until stack is ready' : ''}
@@ -2932,7 +3182,6 @@ function App() {
                 >
                   {openRefundsLoading ? 'Loading…' : 'Refresh'}
                 </button>
-                {!openRefundsHasMore ? <span className="muted small">end</span> : null}
               </div>
               <VirtualList
                 listRef={openRefundsListRef}
@@ -2945,44 +3194,8 @@ function App() {
                     trade={t}
                     selected={selected?.type === 'trade' && selected?.trade?.trade_id === t?.trade_id}
                     onSelect={() => setSelected({ type: 'trade', trade: t })}
-                    onRecoverClaim={() => {
-                      if (!stackGate.ok) return void stackBlockedToast('Claim');
-                      const trade_id = String(t?.trade_id || '').trim();
-                      if (!trade_id) return;
-                      void (async () => {
-                        try {
-                          if (toolRequiresApproval('intercomswap_swaprecover_claim') && !autoApprove) {
-                            const ok = window.confirm(`Claim escrow now?\n\ntrade_id: ${trade_id}`);
-                            if (!ok) return;
-                          }
-                          await runToolFinal('intercomswap_swaprecover_claim', { trade_id }, { auto_approve: true });
-                          pushToast('success', `Claim submitted (${trade_id})`);
-                          void loadOpenClaimsPage({ reset: true });
-                          void loadTradesPage({ reset: true });
-                        } catch (err: any) {
-                          pushToast('error', err?.message || String(err));
-                        }
-                      })();
-                    }}
-                    onRecoverRefund={() => {
-                      if (!stackGate.ok) return void stackBlockedToast('Refund');
-                      const trade_id = String(t?.trade_id || '').trim();
-                      if (!trade_id) return;
-                      void (async () => {
-                        try {
-                          if (toolRequiresApproval('intercomswap_swaprecover_refund') && !autoApprove) {
-                            const ok = window.confirm(`Refund escrow now?\n\ntrade_id: ${trade_id}`);
-                            if (!ok) return;
-                          }
-                          await runToolFinal('intercomswap_swaprecover_refund', { trade_id }, { auto_approve: true });
-                          pushToast('success', `Refund submitted (${trade_id})`);
-                          void loadOpenRefundsPage({ reset: true });
-                          void loadTradesPage({ reset: true });
-                        } catch (err: any) {
-                          pushToast('error', err?.message || String(err));
-                        }
-                      })();
-                    }}
+                    onRecoverClaim={() => void recoverClaimForTrade(t)}
+                    onRecoverRefund={() => void recoverRefundForTrade(t)}
                   />
                 )}
               />
@@ -3001,7 +3214,6 @@ function App() {
                 >
                   {openClaimsLoading ? 'Loading…' : 'Refresh'}
                 </button>
-                {!openClaimsHasMore ? <span className="muted small">end</span> : null}
               </div>
               <VirtualList
                 listRef={openClaimsListRef}
@@ -3014,44 +3226,8 @@ function App() {
                     trade={t}
                     selected={selected?.type === 'trade' && selected?.trade?.trade_id === t?.trade_id}
                     onSelect={() => setSelected({ type: 'trade', trade: t })}
-                    onRecoverClaim={() => {
-                      if (!stackGate.ok) return void stackBlockedToast('Claim');
-                      const trade_id = String(t?.trade_id || '').trim();
-                      if (!trade_id) return;
-                      void (async () => {
-                        try {
-                          if (toolRequiresApproval('intercomswap_swaprecover_claim') && !autoApprove) {
-                            const ok = window.confirm(`Claim escrow now?\n\ntrade_id: ${trade_id}`);
-                            if (!ok) return;
-                          }
-                          await runToolFinal('intercomswap_swaprecover_claim', { trade_id }, { auto_approve: true });
-                          pushToast('success', `Claim submitted (${trade_id})`);
-                          void loadOpenClaimsPage({ reset: true });
-                          void loadTradesPage({ reset: true });
-                        } catch (err: any) {
-                          pushToast('error', err?.message || String(err));
-                        }
-                      })();
-                    }}
-                    onRecoverRefund={() => {
-                      if (!stackGate.ok) return void stackBlockedToast('Refund');
-                      const trade_id = String(t?.trade_id || '').trim();
-                      if (!trade_id) return;
-                      void (async () => {
-                        try {
-                          if (toolRequiresApproval('intercomswap_swaprecover_refund') && !autoApprove) {
-                            const ok = window.confirm(`Refund escrow now?\n\ntrade_id: ${trade_id}`);
-                            if (!ok) return;
-                          }
-                          await runToolFinal('intercomswap_swaprecover_refund', { trade_id }, { auto_approve: true });
-                          pushToast('success', `Refund submitted (${trade_id})`);
-                          void loadOpenRefundsPage({ reset: true });
-                          void loadTradesPage({ reset: true });
-                        } catch (err: any) {
-                          pushToast('error', err?.message || String(err));
-                        }
-                      })();
-                    }}
+                    onRecoverClaim={() => void recoverClaimForTrade(t)}
+                    onRecoverRefund={() => void recoverRefundForTrade(t)}
                   />
                 )}
               />
@@ -3074,7 +3250,7 @@ function App() {
               </div>
 		              <div className="row">
 		                {lnChannelCount > 0 ? <span className="chip hi">{lnChannelCount} channel(s)</span> : <span className="chip warn">no channels</span>}
-		                {lnWalletSats !== null ? <span className="chip">{lnWalletSats} sats</span> : null}
+		                {lnWalletSats !== null ? <span className="chip">{lnWalletSats} sats ({satsToBtcDisplay(lnWalletSats)} BTC)</span> : null}
 		                <button className="btn small" onClick={() => void refreshPreflight()} disabled={preflightBusy}>
 		                  Refresh BTC
 		                </button>
@@ -3250,7 +3426,7 @@ function App() {
                 {solBalanceErr ? <div className="alert bad">{solBalanceErr}</div> : null}
                 {solBalance !== null && solBalance !== undefined ? (
                   <div className="muted small">
-                    balance (lamports): <span className="mono">{String(solBalance)}</span>
+                    balance: <span className="mono">{lamportsToSolDisplay(solBalance)} SOL</span> (<span className="mono">{String(solBalance)} lamports</span>)
                   </div>
                 ) : null}
                 <div className="row">
@@ -3684,6 +3860,12 @@ function btcDisplayToSats(display: string) {
 function satsToBtcDisplay(sats: number) {
   if (!Number.isFinite(sats) || sats < 0) return '';
   return atomicToDecimal(String(Math.trunc(sats)), 8);
+}
+
+function lamportsToSolDisplay(lamports: any) {
+  const s = String(lamports ?? '').trim();
+  if (!s || !/^[0-9]+$/.test(s)) return '';
+  return atomicToDecimal(s, 9);
 }
 
 function bpsToPctDisplay(bps: number) {
@@ -4780,10 +4962,26 @@ function TradeRow({
       <div className="rowitem-bot">
         <span className="muted small">{updated}</span>
         <div className="row">
-          <button className={`btn small ${canClaim ? 'primary' : ''}`} disabled={!canClaim} onClick={(e) => { e.stopPropagation(); onRecoverClaim(); }}>
+          <button
+            className={`btn small ${canClaim ? 'primary' : ''}`}
+            aria-disabled={!canClaim}
+            title={canClaim ? 'Claim now' : 'Not claimable yet (click for details)'}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRecoverClaim();
+            }}
+          >
             Claim
           </button>
-          <button className={`btn small ${canRefund ? 'primary' : ''}`} disabled={!canRefund} onClick={(e) => { e.stopPropagation(); onRecoverRefund(); }}>
+          <button
+            className={`btn small ${canRefund ? 'primary' : ''}`}
+            aria-disabled={!canRefund}
+            title={canRefund ? 'Refund now' : 'Not refundable yet (click for details)'}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRecoverRefund();
+            }}
+          >
             Refund
           </button>
         </div>
