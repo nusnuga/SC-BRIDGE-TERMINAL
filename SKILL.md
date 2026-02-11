@@ -249,6 +249,21 @@ Edit `onchain/prompt/setup.json`:
 - `sc_bridge.token` or `sc_bridge.token_file`: SC‑Bridge auth
 - optional: `receipts.db`, `ln.*`, `solana.*` (only needed for tools that touch those subsystems)
 
+LN backend decision gate (mandatory in every setup.json):
+- Never rely on LN defaults in production-like runs. Defaults are CLN/CLI/regtest and can cause misleading readiness failures.
+- Always set all three explicitly:
+  - `ln.impl`: `cln` or `lnd`
+  - `ln.backend`: `cli` or `docker`
+  - `ln.network`: `regtest` / `signet` / `bitcoin` (CLN mainnet) / `mainnet` (LND mainnet)
+- Backend-specific required fields:
+  - CLN + CLI: `lightning-cli` must exist in PATH (or set `ln.cli_bin`), and CLN RPC/socket credentials must be valid.
+  - LND + CLI: `lncli` must exist in PATH (or set `ln.cli_bin`) and `ln.lnd.rpcserver` + TLS/macaroon paths must be configured.
+  - Docker backend: compose file + service names must match the selected impl.
+- Error mapping (fast diagnosis):
+  - `spawn lightning-cli ENOENT` => config is CLN/CLI but CLN CLI is missing/not configured.
+  - `spawn lncli ENOENT` => config is LND/CLI but LND CLI is missing/not configured.
+  - If you prefer LND, set `ln.impl=lnd` explicitly; do not leave defaults.
+
 Run `promptd`:
 ```bash
 ./scripts/promptd.sh --config onchain/prompt/setup.json
@@ -356,7 +371,11 @@ Example promptd configs (all under `onchain/` so they are gitignored):
   - `server.port`: `9334`
   - `receipts.db`: `onchain/receipts/mainnet/swap-maker.sqlite`
   - `server.audit_dir`: `onchain/prompt/audit-mainnet`
-  - `ln.network`: `bitcoin`
+  - `ln.impl`: `lnd` (recommended) or `cln`
+  - `ln.backend`: `cli` (recommended) or `docker`
+  - `ln.network`: `mainnet` (LND) or `bitcoin` (CLN)
+  - if `ln.impl=lnd` + `ln.backend=cli`: set `ln.lnd.rpcserver`, `ln.lnd.tlscert`, `ln.lnd.macaroon` (and optional `ln.lnd.dir`)
+  - if `ln.impl=cln` + `ln.backend=cli`: ensure `lightning-cli` is installed and reachable (`ln.cli_bin` if not in PATH)
   - `solana.rpc_url`: mainnet RPC(s)
 
 Collin shows an **ENV** indicator (TEST/MAINNET/MIXED) from `intercomswap_env_get` and displays the active `receipts.db` path so you can sanity-check before moving funds.
