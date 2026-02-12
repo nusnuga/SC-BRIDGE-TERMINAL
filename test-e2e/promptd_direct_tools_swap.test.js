@@ -1112,6 +1112,34 @@ test('e2e: promptd direct-tool mode drives full swap (LN regtest <-> Solana escr
   const paymentHashHex = String(invSeen?.payment_hash_hex || '').trim().toLowerCase();
   assert.match(paymentHashHex, /^[0-9a-f]{64}$/);
 
+  // LN route precheck must happen BEFORE maker locks USDT into escrow.
+  // Taker (LN payer) reports ln_route_precheck_ok via swap.status; maker refuses to escrow otherwise.
+  const lnPre = await promptTool({
+    baseUrl: takerBase,
+    sessionId: takerSession,
+    autoApprove: false,
+    name: 'intercomswap_swap_ln_route_precheck_from_terms_invoice',
+    args: { channel: swapChannel, terms_envelope: termsSeen.envelope_handle, invoice_envelope: invSeen.envelope_handle },
+  });
+  assert.equal(lnPre?.ok, true, `ln route precheck failed: ${lnPre?.error || 'unknown'}`);
+
+  await promptTool({
+    baseUrl: takerBase,
+    sessionId: takerSession,
+    autoApprove: true,
+    name: 'intercomswap_swap_status_post',
+    args: { channel: swapChannel, trade_id: tradeId, state: 'accepted', note: 'ln_route_precheck_ok (e2e)' },
+  });
+
+  const precheckSeen = await promptTool({
+    baseUrl: makerBase,
+    sessionId: makerSession,
+    autoApprove: false,
+    name: 'intercomswap_sc_wait_envelope',
+    args: { channels: [swapChannel], kinds: ['swap.status'], timeout_ms: 20000 },
+  });
+  assert.equal(precheckSeen?.type, 'swap_envelope');
+
   await promptTool({
     baseUrl: makerBase,
     sessionId: makerSession,

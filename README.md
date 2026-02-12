@@ -189,11 +189,13 @@ per-trade invite-only swap:<trade_id>
     | SOL_ESCROW_CREATED (escrow PDA + vault ATA)
     v
 Settlement (BTC over Lightning <> USDT on Solana)
-  1) Maker escrows USDT (Solana) and creates LN invoice keyed by payment_hash
-  2) Taker verifies escrow on-chain (hard rule: no escrow, no pay)
-  3) Taker pays LN invoice -> learns preimage
-  4) Taker claims USDT on Solana using preimage
-  5) Refund path after sol_refund_after_unix if LN payment never happens
+  1) Maker creates + posts LN invoice (receiver inbound liquidity check must pass)
+  2) Taker runs LN route precheck and posts `ln_route_precheck_ok` (swap.status)
+  3) Maker escrows USDT (Solana) only after taker precheck is OK
+  4) Taker verifies escrow on-chain (hard rule: no escrow, no pay)
+  5) Taker pays LN invoice -> learns preimage
+  6) Taker claims USDT on Solana using preimage
+  7) Refund path after sol_refund_after_unix if LN payment never happens
 ```
 
 ## External APIs / RPCs (Defaults)

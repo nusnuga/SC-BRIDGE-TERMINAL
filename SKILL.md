@@ -554,16 +554,19 @@ A→Z operating flow:
      - `ln_pay_fail_leave_attempts`
      - `ln_pay_fail_leave_min_wait_ms`
      - `ln_pay_retry_cooldown_ms`
-   - Manual fallback (same deterministic tools):
-     - `intercomswap_quote_post_from_rfq`
-     - `intercomswap_quote_accept`
-     - `intercomswap_swap_invite_from_accept`
-     - `intercomswap_join_from_swap_invite`
-     - `intercomswap_terms_post`
-     - `intercomswap_swap_ln_invoice_create_and_post`
-     - `intercomswap_swap_sol_escrow_init_and_post`
-     - `intercomswap_swap_ln_pay_and_post_verified`
-     - `intercomswap_swap_sol_claim_and_post`
+	   - Manual fallback (same deterministic tools):
+	     - `intercomswap_quote_post_from_rfq`
+	     - `intercomswap_quote_accept`
+	     - `intercomswap_swap_invite_from_accept`
+	     - `intercomswap_join_from_swap_invite`
+	     - `intercomswap_terms_post`
+	     - `intercomswap_swap_ln_invoice_create_and_post`
+	     - Taker must run LN route precheck and post status before maker escrows:
+	       - `intercomswap_swap_ln_route_precheck_from_terms_invoice`
+	       - `intercomswap_swap_status_post` with note starting `ln_route_precheck_ok`
+	     - `intercomswap_swap_sol_escrow_init_and_post`
+	     - `intercomswap_swap_ln_pay_and_post_verified`
+	     - `intercomswap_swap_sol_claim_and_post`
 8. Recovery and stuck-trade handling
    - Inspect local receipts: `intercomswap_receipts_list`, `intercomswap_receipts_show`
    - Find pending claims/refunds: `intercomswap_receipts_list_open_claims`, `intercomswap_receipts_list_open_refunds`
@@ -1494,6 +1497,7 @@ Lightning channel note:
   - Invoice creation follows normal routing behavior; settlement requires reachable routes and receiver inbound.
   - Maker-side quote/offer posting (`intercomswap_offer_post`, `intercomswap_quote_post`, `intercomswap_quote_post_from_rfq`) now hard-fails early on insufficient LN inbound liquidity.
   - Maker invoice posting (`intercomswap_swap_ln_invoice_create_and_post`) also hard-fails on insufficient inbound for the negotiated BTC amount.
+  - Maker escrow posting (`intercomswap_swap_sol_escrow_init_and_post`) is gated on the LN payer posting `ln_route_precheck_ok` (via `swap.status`) after the invoice is posted (prevents escrow lock when payer cannot route).
   - Payer settlement (`intercomswap_swap_ln_pay_and_post_verified`) performs an unroutable precheck (destination consistency + channel/liquidity diagnostics) before/around `ln_pay` so failures are explicit instead of opaque retry churn.
 - Collin will block RFQ/Offer/Bot tools until at least one LN channel exists (to prevent “can’t settle” operator footguns).
 

@@ -1043,10 +1043,10 @@ export const INTERCOMSWAP_TOOLS = [
     },
     required: ['channel', 'trade_id', 'btc_sats', 'label', 'description'],
   }),
-	  tool(
-	    'intercomswap_swap_sol_escrow_init_and_post',
-	    'Maker: init Solana escrow and post SOL_ESCROW_CREATED into swap:<id>. Fees are read from on-chain config/trade-config (not negotiated).',
-	    {
+		  tool(
+		    'intercomswap_swap_sol_escrow_init_and_post',
+		    'Maker: init Solana escrow and post SOL_ESCROW_CREATED into swap:<id>. Requires taker to post ln_route_precheck_ok (swap.status) after LN invoice is posted. Fees are read from on-chain config/trade-config (not negotiated).',
+		    {
 	      type: 'object',
 	      additionalProperties: false,
 	      properties: {

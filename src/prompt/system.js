@@ -43,9 +43,9 @@ Tool cookbook (preferred patterns):
 - Accept a quote (taker): \`intercomswap_quote_accept\`.
 - Create + send the private swap invite (maker): \`intercomswap_swap_invite_from_accept\` (optionally pass \`quote_envelope\` for stricter quote/hash cross-check + best-effort taker liquidity hint validation).
 - Join the private swap channel (taker): \`intercomswap_join_from_swap_invite\`.
-- Settle:
-  - maker: \`intercomswap_swap_ln_invoice_create_and_post\` + \`intercomswap_swap_sol_escrow_init_and_post\`
-  - taker: \`intercomswap_swap_verify_pre_pay\` + \`intercomswap_swap_ln_pay_and_post_verified\` + \`intercomswap_swap_sol_claim_and_post\`
+- Settle (escrow is gated on taker LN route precheck):
+  - maker: \`intercomswap_swap_ln_invoice_create_and_post\` then wait for taker \`ln_route_precheck_ok\` (swap.status) then \`intercomswap_swap_sol_escrow_init_and_post\`
+  - taker: after LN_INVOICE run \`intercomswap_swap_ln_route_precheck_from_terms_invoice\` then \`intercomswap_swap_status_post\` (note starts \`ln_route_precheck_ok\`), then \`intercomswap_swap_verify_pre_pay\` + \`intercomswap_swap_ln_pay_and_post_verified\` + \`intercomswap_swap_sol_claim_and_post\`
 
 Tool call examples (strict JSON):
 - Post Offer (Sell USDT, receive BTC):

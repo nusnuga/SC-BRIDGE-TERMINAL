@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -20,6 +21,62 @@ import { KIND } from '../src/swap/constants.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
+const lnComposeFile = path.join(repoRoot, 'dev/ln-regtest/docker-compose.yml');
+
+const execFileP = promisify(execFile);
+
+async function sh(cmd, args, opts = {}) {
+  const { stdout, stderr } = await execFileP(cmd, args, {
+    cwd: repoRoot,
+    maxBuffer: 1024 * 1024 * 50,
+    ...opts,
+  });
+  return { stdout: String(stdout || ''), stderr: String(stderr || '') };
+}
+
+async function dockerCompose(args) {
+  return sh('docker', ['compose', '-f', lnComposeFile, ...args]);
+}
+
+async function dockerComposeJson(args) {
+  const { stdout } = await dockerCompose(args);
+  const text = stdout.trim();
+  try {
+    return JSON.parse(text);
+  } catch (_e) {
+    return { result: text };
+  }
+}
+
+async function btcCli(args) {
+  const { stdout } = await dockerCompose([
+    'exec',
+    '-T',
+    'bitcoind',
+    'bitcoin-cli',
+    '-regtest',
+    '-rpcuser=rpcuser',
+    '-rpcpassword=rpcpass',
+    '-rpcport=18443',
+    ...args,
+  ]);
+  const text = stdout.trim();
+  try {
+    return JSON.parse(text);
+  } catch (_e) {
+    return { result: text };
+  }
+}
+
+async function clnCli(service, args) {
+  return dockerComposeJson(['exec', '-T', service, 'lightning-cli', '--network=regtest', ...args]);
+}
+
+function hasConfirmedUtxo(listFundsResult) {
+  const outs = listFundsResult?.outputs;
+  if (!Array.isArray(outs)) return false;
+  return outs.some((o) => String(o?.status || '').toLowerCase() === 'confirmed');
+}
 
 async function retry(fn, { tries = 80, delayMs = 250, label = 'retry' } = {}) {
   let lastErr = null;
@@ -747,6 +804,56 @@ test('e2e: prompt tool offer_post broadcasts swap.svc_announce', async (t) => {
 
   const channel = `svc-offer-${runId}`;
 
+  // offer_post enforces LN inbound liquidity (the offer-maker must be able to RECEIVE BTC).
+  // Use the CLN regtest docker stack and open a bob->alice channel so alice has inbound.
+  await dockerCompose(['up', '-d']);
+  t.after(async () => {
+    try {
+      await dockerCompose(['down', '-v', '--remove-orphans']);
+    } catch (_e) {}
+  });
+
+  await retry(() => btcCli(['getblockchaininfo']), { label: 'bitcoind ready', tries: 120, delayMs: 500 });
+  await retry(() => clnCli('cln-alice', ['getinfo']), { label: 'cln-alice ready', tries: 120, delayMs: 500 });
+  await retry(() => clnCli('cln-bob', ['getinfo']), { label: 'cln-bob ready', tries: 120, delayMs: 500 });
+
+  // Create miner wallet and mine spendable coins.
+  try {
+    await btcCli(['createwallet', 'miner']);
+  } catch (_e) {}
+  const minerAddr = (await btcCli(['-rpcwallet=miner', 'getnewaddress'])).result;
+  await btcCli(['-rpcwallet=miner', 'generatetoaddress', '101', minerAddr]);
+
+  // Fund bob so it can open the channel.
+  const bobBtcAddr = (await clnCli('cln-bob', ['newaddr'])).bech32;
+  await btcCli(['-rpcwallet=miner', 'sendtoaddress', bobBtcAddr, '1']);
+  await btcCli(['-rpcwallet=miner', 'generatetoaddress', '6', minerAddr]);
+
+  await retry(async () => {
+    const funds = await clnCli('cln-bob', ['listfunds']);
+    if (!hasConfirmedUtxo(funds)) throw new Error('bob not funded (no confirmed UTXO yet)');
+    return funds;
+  }, { label: 'bob funded', tries: 80, delayMs: 500 });
+
+  // Connect and open channel (bob -> alice) so alice has inbound capacity.
+  const aliceInfo = await clnCli('cln-alice', ['getinfo']);
+  const aliceNodeId = aliceInfo.id;
+  await clnCli('cln-bob', ['connect', `${aliceNodeId}@cln-alice:9735`]);
+  await retry(() => clnCli('cln-bob', ['fundchannel', aliceNodeId, '1000000']), {
+    label: 'fundchannel',
+    tries: 40,
+    delayMs: 1000,
+  });
+  await btcCli(['-rpcwallet=miner', 'generatetoaddress', '6', minerAddr]);
+
+  await retry(async () => {
+    const chans = await clnCli('cln-bob', ['listpeerchannels']);
+    const c = chans.channels?.find((x) => x.peer_id === aliceNodeId);
+    const st = c?.state || '';
+    if (st !== 'CHANNELD_NORMAL') throw new Error(`channel state=${st}`);
+    return chans;
+  }, { label: 'channel active', tries: 120, delayMs: 500 });
+
   const storesDir = path.join(repoRoot, 'stores');
   const announcerStore = `e2e-offer-tool-announcer-${runId}`;
   const listenerStore = `e2e-offer-tool-listener-${runId}`;
@@ -862,7 +969,7 @@ test('e2e: prompt tool offer_post broadcasts swap.svc_announce', async (t) => {
         },
         sc_bridge: { url: `ws://127.0.0.1:${announcerPort}`, token: announcerToken },
         receipts: { db: `onchain/receipts/e2e-offer-post-${runId}.sqlite` },
-        ln: { impl: 'cln', backend: 'cli', network: 'regtest' },
+        ln: { impl: 'cln', backend: 'docker', network: 'regtest', compose_file: 'dev/ln-regtest/docker-compose.yml', service: 'cln-alice' },
         solana: { rpc_url: 'http://127.0.0.1:8899', commitment: 'confirmed', program_id: '', keypair: '' },
       },
       null,

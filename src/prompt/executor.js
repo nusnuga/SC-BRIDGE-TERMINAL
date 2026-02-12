@@ -5248,6 +5248,99 @@ export class ToolExecutor {
       const tradeFeeCollector = new PublicKey(normalizeBase58(expectString(args, toolName, 'trade_fee_collector', { max: 64 }), 'trade_fee_collector'));
       if (dryRun) return { type: 'dry_run', tool: toolName, channel, trade_id: tradeId, payment_hash_hex: paymentHashHex };
 
+      // Safety gate: refuse to lock USDT into escrow until the LN payer has explicitly reported
+      // a successful LN route precheck for the current invoice (prevents obvious NO_ROUTE griefing
+      // and avoids refunds caused by escrowing before the payer can even route).
+      //
+      // This must be enforced at tool level (not only in TradeAuto) because manual/older flows
+      // could call this tool directly.
+      await this._scEnsureChannelSubscribed(channel, { timeoutMs: 10_000 });
+      try {
+        let termsEnv = null;
+        let termsBody = null;
+        let lnPayerPeer = '';
+        let invoiceSeq = 0;
+        let preOkSeq = 0;
+        let preOkNote = '';
+        let preFailSeq = 0;
+        let preFailNote = '';
+
+        // Find latest TERMS and the specific LN_INVOICE we are binding escrow to (by payment_hash).
+        for (let i = this._scLog.length - 1; i >= 0; i -= 1) {
+          const evt = this._scLog[i];
+          if (!evt || typeof evt !== 'object') continue;
+          if (String(evt.channel || '').trim() !== channel) continue;
+          const msg = evt.message;
+          if (!isObject(msg)) continue;
+          if (String(msg.trade_id || '').trim() !== tradeId) continue;
+          const kind = String(msg.kind || '').trim();
+          if (!termsEnv && kind === KIND.TERMS) {
+            termsEnv = msg;
+            termsBody = isObject(msg.body) ? msg.body : {};
+            const rawPayer = String(termsBody?.ln_payer_peer || '').trim().toLowerCase();
+            lnPayerPeer = /^[0-9a-f]{64}$/i.test(rawPayer) ? rawPayer : '';
+          }
+          if (!invoiceSeq && kind === KIND.LN_INVOICE) {
+            const body = isObject(msg.body) ? msg.body : {};
+            const got = String(body?.payment_hash_hex || '').trim().toLowerCase();
+            if (got && got === paymentHashHex) invoiceSeq = Number(evt.seq || 0);
+          }
+          if (termsEnv && invoiceSeq > 0) break;
+        }
+
+        if (!termsEnv) throw new Error('missing terms envelope');
+        if (!lnPayerPeer) throw new Error('terms missing ln_payer_peer');
+        if (invoiceSeq < 1) {
+          throw new Error(`missing ln_invoice for payment_hash_hex=${paymentHashHex}`);
+        }
+
+        // Find LN route precheck status posted by the LN payer (after the invoice was posted).
+        for (let i = this._scLog.length - 1; i >= 0; i -= 1) {
+          const evt = this._scLog[i];
+          if (!evt || typeof evt !== 'object') continue;
+          const seq = Number(evt.seq || 0);
+          if (seq <= invoiceSeq) break;
+          if (String(evt.channel || '').trim() !== channel) continue;
+          const msg = evt.message;
+          if (!isObject(msg)) continue;
+          if (String(msg.trade_id || '').trim() !== tradeId) continue;
+          if (String(msg.kind || '').trim() !== KIND.STATUS) continue;
+          const signer = String(msg.signer || '').trim().toLowerCase();
+          if (!signer || signer !== lnPayerPeer) continue;
+          const body = isObject(msg.body) ? msg.body : {};
+          const state = String(body?.state || '').trim().toLowerCase();
+          if (state !== 'accepted') continue;
+          const note = String(body?.note || '').trim();
+          if (!note) continue;
+          if (/^ln_route_precheck_ok(?:\b|[:; ])?/i.test(note)) {
+            if (seq > preOkSeq) {
+              preOkSeq = seq;
+              preOkNote = note;
+            }
+            continue;
+          }
+          if (/^ln_route_precheck_fail(?:\b|[:; ])?/i.test(note)) {
+            if (seq > preFailSeq) {
+              preFailSeq = seq;
+              preFailNote = note;
+            }
+          }
+        }
+
+        if (preOkSeq < 1) {
+          throw new Error(
+            `waiting for ln_route_precheck_ok from ln_payer_peer=${lnPayerPeer} (do not escrow before payer confirms routability)`
+          );
+        }
+        if (preFailSeq > preOkSeq) {
+          throw new Error(
+            `ln payer reported ln_route_precheck_fail; refusing to escrow (${normalizeTraceText(preFailNote || 'unknown', { max: 220 })})`
+          );
+        }
+      } catch (err) {
+        throw new Error(`${toolName}: ln_route_precheck gate blocked: ${err?.message || String(err)}`);
+      }
+
       const store = await this._openReceiptsStore({ required: true });
       try {
 	      const signer = this._requireSolanaSigner();
