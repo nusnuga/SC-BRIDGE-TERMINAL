@@ -1350,11 +1350,136 @@ function App() {
     return Boolean(tradeId && terminalTradeIdsSet.has(tradeId));
   };
 
+  const isTerminalTradeState = (stateRaw: any): boolean => {
+    const state = String(stateRaw || '').trim().toLowerCase();
+    return (
+      state === 'claimed' ||
+      state === 'refunded' ||
+      state === 'canceled' ||
+      state === 'cancelled' ||
+      state === 'failed' ||
+      state === 'expired'
+    );
+  };
+
+  const tradeUpdatedAtMs = (trade: any): number => {
+    const raw = trade?.updated_at;
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (typeof raw === 'string' && /^[0-9]+$/.test(raw.trim())) {
+      const n = Number.parseInt(raw.trim(), 10);
+      if (Number.isFinite(n)) return n;
+    }
+    return 0;
+  };
+
+  const listingEventTradeId = (evt: any): string => {
+    try {
+      return String(evt?.trade_id || evt?.message?.trade_id || '').trim();
+    } catch (_e) {
+      return '';
+    }
+  };
+
+  const listingEventTsMs = (evt: any): number => {
+    const cands = [evt?.ts, evt?.message?.ts, evt?.updated_at];
+    for (const c of cands) {
+      const ms = epochToMs(c);
+      if (ms && Number.isFinite(ms) && ms > 0) return ms;
+      if (typeof c === 'number' && Number.isFinite(c) && c > 0) return c;
+      if (typeof c === 'string' && /^[0-9]+$/.test(c.trim())) {
+        const n = Number.parseInt(c.trim(), 10);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    }
+    return 0;
+  };
+
+  // Keep the most recent known terminal timestamp per trade id.
+  // Listings older than or equal to this cutoff are hidden from activity panels.
+  const terminalTradeCutoffMsById = useMemo(() => {
+    const out = new Map<string, number>();
+    const put = (tradeIdRaw: any, tsRaw: any) => {
+      const tradeId = String(tradeIdRaw || '').trim();
+      if (!tradeId) return;
+      const ms = epochToMs(tsRaw) || (typeof tsRaw === 'number' && Number.isFinite(tsRaw) ? tsRaw : 0);
+      const prev = Number(out.get(tradeId) || 0);
+      if (ms > prev) out.set(tradeId, ms);
+      else if (!out.has(tradeId)) out.set(tradeId, prev);
+    };
+    for (const t of trades) {
+      if (!isTerminalTradeState(t?.state)) continue;
+      put(t?.trade_id, t?.updated_at ?? t?.created_at);
+    }
+    for (const t of openClaims) {
+      if (!isTerminalTradeState(t?.state)) continue;
+      put(t?.trade_id, t?.updated_at ?? t?.created_at);
+    }
+    for (const t of openRefunds) {
+      if (!isTerminalTradeState(t?.state)) continue;
+      put(t?.trade_id, t?.updated_at ?? t?.created_at);
+    }
+    if (selected?.type === 'trade' && isTerminalTradeState(selected?.trade?.state)) {
+      put(selected?.trade?.trade_id, selected?.trade?.updated_at ?? selected?.trade?.created_at);
+    }
+    for (const e of scEvents) {
+      try {
+        const kind = String((e as any)?.kind || '').trim();
+        if (kind !== 'swap.sol_claimed' && kind !== 'swap.sol_refunded' && kind !== 'swap.cancel') continue;
+        const msg = (e as any)?.message;
+        const tradeId = String((e as any)?.trade_id || msg?.trade_id || '').trim();
+        if (!tradeId) continue;
+        put(tradeId, (e as any)?.ts ?? msg?.ts);
+      } catch (_e) {}
+    }
+    for (const tradeId of terminalTradeIdsSet) {
+      if (!out.has(tradeId)) out.set(tradeId, 0);
+    }
+    return out;
+  }, [terminalTradeIdsSet, trades, openClaims, openRefunds, selected, scEvents]);
+
+  const shouldHideTerminalListingEvent = (evt: any): boolean => {
+    const tradeId = listingEventTradeId(evt);
+    if (!tradeId) return false;
+    if (!terminalTradeIdsSet.has(tradeId)) return false;
+    const cutoffMs = Number(terminalTradeCutoffMsById.get(tradeId) || 0);
+    if (!Number.isFinite(cutoffMs) || cutoffMs <= 0) return true;
+    const evtMs = listingEventTsMs(evt);
+    if (!Number.isFinite(evtMs) || evtMs <= 0) return true;
+    return evtMs <= cutoffMs;
+  };
+
   useEffect(() => {
     if (terminalTradeIdsSet.size < 1) return;
     setOpenRefunds((prev) => prev.filter((t) => !terminalTradeIdsSet.has(String(t?.trade_id || '').trim())));
     setOpenClaims((prev) => prev.filter((t) => !terminalTradeIdsSet.has(String(t?.trade_id || '').trim())));
   }, [terminalTradeIdsSet]);
+
+  // Keep selected trade view in sync when receipt rows are refreshed with newer state.
+  useEffect(() => {
+    if (selected?.type !== 'trade') return;
+    const tradeId = String(selected?.trade?.trade_id || '').trim();
+    if (!tradeId) return;
+    let freshest: any = null;
+    for (const t of trades) {
+      if (String(t?.trade_id || '').trim() !== tradeId) continue;
+      if (!freshest || tradeUpdatedAtMs(t) >= tradeUpdatedAtMs(freshest)) freshest = t;
+    }
+    for (const t of openRefunds) {
+      if (String(t?.trade_id || '').trim() !== tradeId) continue;
+      if (!freshest || tradeUpdatedAtMs(t) >= tradeUpdatedAtMs(freshest)) freshest = t;
+    }
+    for (const t of openClaims) {
+      if (String(t?.trade_id || '').trim() !== tradeId) continue;
+      if (!freshest || tradeUpdatedAtMs(t) >= tradeUpdatedAtMs(freshest)) freshest = t;
+    }
+    if (!freshest) return;
+    const current = selected?.trade;
+    const changed =
+      tradeUpdatedAtMs(freshest) !== tradeUpdatedAtMs(current) ||
+      String(freshest?.state || '') !== String(current?.state || '') ||
+      String(freshest?.last_error || '') !== String(current?.last_error || '');
+    if (changed) setSelected({ type: 'trade', trade: freshest });
+  }, [selected, trades, openRefunds, openClaims]);
 
   const rendezvousChannels = useMemo(
     () => normalizeChannels(scChannels.split(',').map((s) => s.trim()).filter(Boolean), { max: 50, dropSwapTradeChannels: true }),
@@ -1800,49 +1925,54 @@ function App() {
   }
 
   const sellUsdtFeedItems = useMemo(() => {
+    const visibleRfqEvents = rfqEvents.filter((e) => !shouldHideTerminalListingEvent(e));
+    const visibleMyOfferPosts = myOfferPosts.filter((e) => !shouldHideTerminalListingEvent(e));
     const out: any[] = [];
-    out.push({ _t: 'header', id: 'h:inboxrfqs', title: 'BTC Sales', count: rfqEvents.length, open: sellUsdtInboxOpen, onToggle: () => toggleSellUsdtSection('inbox') });
+    out.push({ _t: 'header', id: 'h:inboxrfqs', title: 'BTC Sales', count: visibleRfqEvents.length, open: sellUsdtInboxOpen, onToggle: () => toggleSellUsdtSection('inbox') });
     if (sellUsdtInboxOpen) {
-      for (let i = 0; i < rfqEvents.length; i += 1) {
-        const e = rfqEvents[i];
+      for (let i = 0; i < visibleRfqEvents.length; i += 1) {
+        const e = visibleRfqEvents[i];
         out.push({ _t: 'rfq', id: feedEventId('inrfq:', e, i), evt: e });
       }
     }
-    out.push({ _t: 'header', id: 'h:myoffers', title: 'My Offers', count: myOfferPosts.length, open: sellUsdtMyOpen, onToggle: () => toggleSellUsdtSection('mine') });
+    out.push({ _t: 'header', id: 'h:myoffers', title: 'My Offers', count: visibleMyOfferPosts.length, open: sellUsdtMyOpen, onToggle: () => toggleSellUsdtSection('mine') });
     if (sellUsdtMyOpen) {
-      for (let i = 0; i < myOfferPosts.length; i += 1) {
-        const e = myOfferPosts[i];
+      for (let i = 0; i < visibleMyOfferPosts.length; i += 1) {
+        const e = visibleMyOfferPosts[i];
         out.push({ _t: 'offer', id: feedEventId('myoffer:', e, i), evt: e, badge: 'outbox' });
       }
     }
     return out;
-  }, [myOfferPosts, rfqEvents, sellUsdtInboxOpen, sellUsdtMyOpen]);
+  }, [myOfferPosts, rfqEvents, sellUsdtInboxOpen, sellUsdtMyOpen, terminalTradeIdsSet, terminalTradeCutoffMsById]);
 
   const sellBtcFeedItems = useMemo(() => {
+    const visibleOfferEvents = offerEvents.filter((e) => !shouldHideTerminalListingEvent(e));
+    const visibleQuoteEvents = quoteEvents.filter((e) => !shouldHideTerminalListingEvent(e));
+    const visibleMyRfqPosts = myRfqPosts.filter((e) => !shouldHideTerminalListingEvent(e));
     const out: any[] = [];
-    out.push({ _t: 'header', id: 'h:inboxoffers', title: 'USDT Sales', count: offerEvents.length, open: sellBtcInboxOpen, onToggle: () => toggleSellBtcSection('offers') });
+    out.push({ _t: 'header', id: 'h:inboxoffers', title: 'USDT Sales', count: visibleOfferEvents.length, open: sellBtcInboxOpen, onToggle: () => toggleSellBtcSection('offers') });
     if (sellBtcInboxOpen) {
-      for (let i = 0; i < offerEvents.length; i += 1) {
-        const e = offerEvents[i];
+      for (let i = 0; i < visibleOfferEvents.length; i += 1) {
+        const e = visibleOfferEvents[i];
         out.push({ _t: 'offer', id: feedEventId('inoffer:', e, i), evt: e });
       }
     }
-    out.push({ _t: 'header', id: 'h:inboxquotes', title: 'Exact Matches', count: quoteEvents.length, open: sellBtcQuotesOpen, onToggle: () => toggleSellBtcSection('quotes') });
+    out.push({ _t: 'header', id: 'h:inboxquotes', title: 'Exact Matches', count: visibleQuoteEvents.length, open: sellBtcQuotesOpen, onToggle: () => toggleSellBtcSection('quotes') });
     if (sellBtcQuotesOpen) {
-      for (let i = 0; i < quoteEvents.length; i += 1) {
-        const e = quoteEvents[i];
+      for (let i = 0; i < visibleQuoteEvents.length; i += 1) {
+        const e = visibleQuoteEvents[i];
         out.push({ _t: 'quote', id: feedEventId('inq:', e, i), evt: e });
       }
     }
-    out.push({ _t: 'header', id: 'h:myrfqs', title: 'My Offers', count: myRfqPosts.length, open: sellBtcMyOpen, onToggle: () => toggleSellBtcSection('mine') });
+    out.push({ _t: 'header', id: 'h:myrfqs', title: 'My Offers', count: visibleMyRfqPosts.length, open: sellBtcMyOpen, onToggle: () => toggleSellBtcSection('mine') });
     if (sellBtcMyOpen) {
-      for (let i = 0; i < myRfqPosts.length; i += 1) {
-        const e = myRfqPosts[i];
+      for (let i = 0; i < visibleMyRfqPosts.length; i += 1) {
+        const e = visibleMyRfqPosts[i];
         out.push({ _t: 'rfq', id: feedEventId('myrfq:', e, i), evt: e, badge: 'outbox' });
       }
     }
     return out;
-  }, [offerEvents, quoteEvents, myRfqPosts, sellBtcInboxOpen, sellBtcQuotesOpen, sellBtcMyOpen]);
+  }, [offerEvents, quoteEvents, myRfqPosts, sellBtcInboxOpen, sellBtcQuotesOpen, sellBtcMyOpen, terminalTradeIdsSet, terminalTradeCutoffMsById]);
 
   function oldestDbId(list: any[]) {
     let min = Number.POSITIVE_INFINITY;
@@ -3775,16 +3905,27 @@ function App() {
       const page = await runDirectToolOnce('intercomswap_receipts_list', { ...receiptsDbArg, limit: tradesLimit, offset }, { auto_approve: false });
       const arr = Array.isArray(page) ? page : [];
       setTrades((prev) => {
-        const next = reset ? [] : prev;
-        const seen = new Set(next.map((t) => String(t?.trade_id || '')).filter(Boolean));
-        const toAdd = arr.filter((t) => {
+        const base = reset ? [] : prev;
+        const byId = new Map<string, any>();
+        const upsert = (t: any) => {
           const id = String(t?.trade_id || '').trim();
-          if (!id) return false;
-          if (seen.has(id)) return false;
-          seen.add(id);
-          return true;
-        });
-        const out = next.concat(toAdd);
+          if (!id) return;
+          const existing = byId.get(id);
+          if (!existing) {
+            byId.set(id, t);
+            return;
+          }
+          const nextTs = tradeUpdatedAtMs(t);
+          const existingTs = tradeUpdatedAtMs(existing);
+          const nextTerminal = isTerminalTradeState(t?.state);
+          const existingTerminal = isTerminalTradeState(existing?.state);
+          if (nextTs > existingTs || (nextTs === existingTs && nextTerminal && !existingTerminal)) {
+            byId.set(id, t);
+          }
+        };
+        for (const t of base) upsert(t);
+        for (const t of arr) upsert(t);
+        const out = Array.from(byId.values()).sort((a, b) => tradeUpdatedAtMs(b) - tradeUpdatedAtMs(a));
         return out.length <= 2000 ? out : out.slice(0, 2000);
       });
       setTradesOffset(offset + arr.length);
@@ -3809,21 +3950,28 @@ function App() {
       );
       const arr = Array.isArray(page) ? page : [];
       setOpenRefunds((prev) => {
-        const next = (reset ? [] : prev).filter((t) => {
+        const base = (reset ? [] : prev).filter((t) => {
           const id = String(t?.trade_id || '').trim();
           if (!id) return false;
           return !terminalTradeIdsSet.has(id);
         });
-        const seen = new Set(next.map((t) => String(t?.trade_id || '')).filter(Boolean));
-        const toAdd = arr.filter((t) => {
+        const byId = new Map<string, any>();
+        const upsert = (t: any) => {
           const id = String(t?.trade_id || '').trim();
-          if (!id) return false;
-          if (terminalTradeIdsSet.has(id)) return false;
-          if (seen.has(id)) return false;
-          seen.add(id);
-          return true;
-        });
-        const out = next.concat(toAdd);
+          if (!id) return;
+          if (terminalTradeIdsSet.has(id)) return;
+          const existing = byId.get(id);
+          if (!existing) {
+            byId.set(id, t);
+            return;
+          }
+          const nextTs = tradeUpdatedAtMs(t);
+          const existingTs = tradeUpdatedAtMs(existing);
+          if (nextTs >= existingTs) byId.set(id, t);
+        };
+        for (const t of base) upsert(t);
+        for (const t of arr) upsert(t);
+        const out = Array.from(byId.values()).sort((a, b) => tradeUpdatedAtMs(b) - tradeUpdatedAtMs(a));
         return out.length <= 2000 ? out : out.slice(0, 2000);
       });
       setOpenRefundsOffset(offset + arr.length);
@@ -3851,21 +3999,28 @@ function App() {
       );
       const arr = Array.isArray(page) ? page : [];
       setOpenClaims((prev) => {
-        const next = (reset ? [] : prev).filter((t) => {
+        const base = (reset ? [] : prev).filter((t) => {
           const id = String(t?.trade_id || '').trim();
           if (!id) return false;
           return !terminalTradeIdsSet.has(id);
         });
-        const seen = new Set(next.map((t) => String(t?.trade_id || '')).filter(Boolean));
-        const toAdd = arr.filter((t) => {
+        const byId = new Map<string, any>();
+        const upsert = (t: any) => {
           const id = String(t?.trade_id || '').trim();
-          if (!id) return false;
-          if (terminalTradeIdsSet.has(id)) return false;
-          if (seen.has(id)) return false;
-          seen.add(id);
-          return true;
-        });
-        const out = next.concat(toAdd);
+          if (!id) return;
+          if (terminalTradeIdsSet.has(id)) return;
+          const existing = byId.get(id);
+          if (!existing) {
+            byId.set(id, t);
+            return;
+          }
+          const nextTs = tradeUpdatedAtMs(t);
+          const existingTs = tradeUpdatedAtMs(existing);
+          if (nextTs >= existingTs) byId.set(id, t);
+        };
+        for (const t of base) upsert(t);
+        for (const t of arr) upsert(t);
+        const out = Array.from(byId.values()).sort((a, b) => tradeUpdatedAtMs(b) - tradeUpdatedAtMs(a));
         return out.length <= 2000 ? out : out.slice(0, 2000);
       });
       setOpenClaimsOffset(offset + arr.length);
@@ -4505,6 +4660,23 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  // Keep receipt-based tabs fresh so terminal state transitions are reflected without manual refresh.
+  useEffect(() => {
+    if (!health?.ok) return;
+    if (activeTab !== 'trade_actions' && activeTab !== 'refunds') return;
+    const run = () => {
+      if (activeTab === 'trade_actions') void loadTradesPage({ reset: true });
+      if (activeTab === 'refunds') {
+        void loadOpenRefundsPage({ reset: true });
+        void loadOpenClaimsPage({ reset: true });
+      }
+    };
+    run();
+    const t = setInterval(run, 15_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, health?.ok, selectedReceiptsSource?.key]);
 
   // When switching receipts DB sources, reset pagination so operators don't mix multiple stores.
   useEffect(() => {
@@ -6677,6 +6849,7 @@ function App() {
 	                    trade={t}
 	                    oracle={oracle}
 	                    terminalTradeIdsSet={terminalTradeIdsSet}
+	                    nowUnixSec={Math.floor(uiNowMs / 1000)}
 	                    selected={selected?.type === 'trade' && selected?.trade?.trade_id === t?.trade_id}
 	                    onSelect={() => setSelected({ type: 'trade', trade: t })}
 	                    onRecoverClaim={() => void recoverClaimForTrade(t)}
@@ -6826,6 +6999,7 @@ function App() {
 	                    trade={t}
 	                    oracle={oracle}
 	                    terminalTradeIdsSet={terminalTradeIdsSet}
+	                    nowUnixSec={Math.floor(uiNowMs / 1000)}
 	                    selected={selected?.type === 'trade' && selected?.trade?.trade_id === t?.trade_id}
 	                    onSelect={() => setSelected({ type: 'trade', trade: t })}
 	                    onRecoverClaim={() => void recoverClaimForTrade(t)}
@@ -6860,6 +7034,7 @@ function App() {
 	                    trade={t}
 	                    oracle={oracle}
 	                    terminalTradeIdsSet={terminalTradeIdsSet}
+	                    nowUnixSec={Math.floor(uiNowMs / 1000)}
 	                    selected={selected?.type === 'trade' && selected?.trade?.trade_id === t?.trade_id}
 	                    onSelect={() => setSelected({ type: 'trade', trade: t })}
 	                    onRecoverClaim={() => void recoverClaimForTrade(t)}
@@ -9831,6 +10006,7 @@ function TradeRow({
   trade,
   oracle,
   terminalTradeIdsSet,
+  nowUnixSec,
   selected,
   onSelect,
   onRecoverClaim,
@@ -9839,6 +10015,7 @@ function TradeRow({
   trade: any;
   oracle?: OracleSummary;
   terminalTradeIdsSet?: ReadonlySet<string>;
+  nowUnixSec?: number;
   selected: boolean;
   onSelect: () => void;
   onRecoverClaim: () => void;
@@ -9870,9 +10047,23 @@ function TradeRow({
   const terminal = terminalByState || Boolean(tradeId && terminalTradeIdsSet?.has(tradeId));
   const expired = terminal;
 
+  const refundAfterRaw = trade?.sol_refund_after_unix;
+  const refundAfterUnix =
+    typeof refundAfterRaw === 'number'
+      ? refundAfterRaw
+      : typeof refundAfterRaw === 'string' && /^[0-9]+$/.test(refundAfterRaw.trim())
+        ? Number.parseInt(refundAfterRaw.trim(), 10)
+        : null;
+  const nowSec = Number.isFinite(nowUnixSec as any) ? Number(nowUnixSec) : Math.floor(Date.now() / 1000);
+  const refundReached = refundAfterUnix !== null && Number.isFinite(refundAfterUnix) && nowSec >= refundAfterUnix;
+
   const canClaim = !terminal && stateLower === 'ln_paid' && Boolean(String(trade?.ln_preimage_hex || '').trim());
-  const canRefund =
-    !terminal && stateLower === 'escrow' && trade?.sol_refund_after_unix !== null && trade?.sol_refund_after_unix !== undefined;
+  const canRefund = !terminal && stateLower === 'escrow' && refundReached;
+  const refundTitle = canRefund
+    ? 'Refund now'
+    : refundAfterUnix && Number.isFinite(refundAfterUnix)
+      ? `Refund available after ${unixSecToUtcIso(refundAfterUnix)}`
+      : 'Not refundable yet';
 
   return (
     <div className={`rowitem ${selected ? 'selected' : ''} ${expired ? 'expired' : ''}`} role="button" onClick={onSelect}>
@@ -9898,14 +10089,14 @@ function TradeRow({
           >
             Claim
           </button>
-          <button
-            className={`btn small ${canRefund ? 'primary' : ''}`}
-            aria-disabled={!canRefund}
-            title={canRefund ? 'Refund now' : 'Not refundable yet'}
-            onClick={(e) => { e.stopPropagation(); onRecoverRefund(); }}
-          >
-            Refund
-          </button>
+	          <button
+	            className={`btn small ${canRefund ? 'primary' : ''}`}
+	            aria-disabled={!canRefund}
+	            title={refundTitle}
+	            onClick={(e) => { e.stopPropagation(); onRecoverRefund(); }}
+	          >
+	            Refund
+	          </button>
         </div>
       </div>
     </div>
