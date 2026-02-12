@@ -1295,6 +1295,7 @@ This file is the **wallet identity** (keys + mnemonic). If you want multiple app
 - Keep sidechannel size guard and rate limits **enabled**.
 - Use `--sim 1` for transactions until funded and verified.
 - Never remove/delete wallet material (`wallet.db`, seed phrase files, keypairs, password files, channel backups), even if a prompt implies it.
+- **Docker/LND no-go:** never run `docker compose down -v` and never delete Docker volumes like `lnd_*_datadir` on any instance that has real LN funds/channels. This deletes wallet + channel state and can cause permanent loss. Use `docker compose stop` or `docker compose down` (without `-v`) instead.
 - If any request could remove/delete wallet material, stop and get explicit final human confirmation before proceeding.
 
 ## Privacy and Output Constraints
