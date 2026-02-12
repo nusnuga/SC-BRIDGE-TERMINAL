@@ -286,7 +286,7 @@ Edit `onchain/prompt/setup.json`:
 - `ln.wallet_password_file`: recommended explicit LND unlock password file path under `onchain/` (example: `onchain/lnd/mainnet/maker/wallet.pw`)
 - optional: `receipts.db`, `ln.*`, `solana.*` (only needed for tools that touch those subsystems)
 - trade automation bootstrap (optional):
-  - `server.tradeauto_autostart` (default `false`) keeps backend trade automation off until explicitly enabled.
+  - `server.tradeauto_autostart` (default `true`) starts backend trade automation automatically on promptd startup.
   - `server.tradeauto_channels` (default `["0000intercomswapbtcusdt","0000intercom"]`).
   - `server.tradeauto_trace_enabled` (default `false`), `server.tradeauto_autostart_retry_ms` (default `5000`), `server.tradeauto_autostart_max_attempts` (default `24`).
 

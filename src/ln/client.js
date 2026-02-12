@@ -459,6 +459,112 @@ export async function lnDecodePay(opts, { bolt11 }) {
   return lnClnCli({ ...opts, args: ['decodepay', inv] });
 }
 
+export async function lnQueryRoutes(
+  opts,
+  {
+    destinationPubkey,
+    amtSats,
+    numRoutes = 1,
+    outgoingChanId = null,
+    lastHopPubkey = null,
+  } = {}
+) {
+  if (opts.impl !== 'lnd') {
+    throw new Error(`lnQueryRoutes is currently supported for ln.impl=lnd only (got ${String(opts.impl || 'unknown')})`);
+  }
+
+  const dest = String(destinationPubkey || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{66}$/i.test(dest)) throw new Error('Invalid destinationPubkey (expected hex33)');
+
+  const amt = Number(amtSats);
+  if (!Number.isFinite(amt) || !Number.isInteger(amt) || amt <= 0) throw new Error('Invalid amtSats (expected integer sats > 0)');
+
+  const nRoutesRaw = numRoutes === null || numRoutes === undefined ? null : Number(numRoutes);
+  const nRoutes =
+    nRoutesRaw !== null && Number.isFinite(nRoutesRaw) && Number.isInteger(nRoutesRaw) && nRoutesRaw > 0
+      ? Math.min(20, nRoutesRaw)
+      : null;
+
+  const cfg = {
+    useFlags: true,
+    destFlag: '--dest',
+    amtFlag: '--amt',
+    includeNumRoutes: true,
+    numRoutesFlag: '--num_max_routes',
+    includeOutgoing: true,
+    outgoingFlag: '--outgoing_chan_id',
+    includeLastHop: true,
+    lastHopFlag: '--last_hop',
+  };
+
+  const buildArgs = () => {
+    const args = ['queryroutes'];
+    if (cfg.useFlags) {
+      args.push(cfg.destFlag, dest, cfg.amtFlag, String(amt));
+    } else {
+      args.push(dest, String(amt));
+    }
+    if (cfg.includeNumRoutes && nRoutes !== null) args.push(cfg.numRoutesFlag, String(nRoutes));
+
+    if (cfg.includeOutgoing && outgoingChanId !== null && outgoingChanId !== undefined) {
+      const s = String(outgoingChanId).trim();
+      if (!/^[0-9]+$/.test(s)) throw new Error('Invalid outgoingChanId (expected numeric chan_id)');
+      args.push(cfg.outgoingFlag, s);
+    }
+
+    if (cfg.includeLastHop && lastHopPubkey !== null && lastHopPubkey !== undefined) {
+      const s = String(lastHopPubkey).trim().toLowerCase();
+      if (!/^[0-9a-f]{66}$/i.test(s)) throw new Error('Invalid lastHopPubkey (expected hex33)');
+      args.push(cfg.lastHopFlag, s);
+    }
+    return args;
+  };
+
+  let lastErr = null;
+  for (let i = 0; i < 10; i += 1) {
+    try {
+      return await lnLndCli({ ...opts, args: buildArgs() });
+    } catch (err) {
+      lastErr = err;
+      const runArgs = buildArgs();
+      if (cfg.useFlags && isUnknownFlagError(err, cfg.destFlag)) {
+        cfg.useFlags = false;
+        continue;
+      }
+      if (cfg.useFlags && isUnknownFlagError(err, cfg.amtFlag)) {
+        cfg.useFlags = false;
+        continue;
+      }
+      if (cfg.includeNumRoutes && includesFlag(runArgs, cfg.numRoutesFlag) && isUnknownFlagError(err, cfg.numRoutesFlag)) {
+        cfg.includeNumRoutes = false;
+        continue;
+      }
+      if (cfg.includeOutgoing && includesFlag(runArgs, '--outgoing_chan_id') && isUnknownFlagError(err, '--outgoing_chan_id')) {
+        cfg.outgoingFlag = '--outgoing_chan_ids';
+        continue;
+      }
+      if (cfg.includeOutgoing && includesFlag(runArgs, '--outgoing_chan_ids') && isUnknownFlagError(err, '--outgoing_chan_ids')) {
+        cfg.includeOutgoing = false;
+        continue;
+      }
+      if (cfg.includeLastHop && includesFlag(runArgs, '--last_hop') && isUnknownFlagError(err, '--last_hop')) {
+        cfg.includeLastHop = false;
+        continue;
+      }
+      const unknownAny = /flag provided but not defined|unknown flag/i.test(String(err?.message || ''));
+      if (unknownAny) {
+        cfg.useFlags = false;
+        cfg.includeNumRoutes = false;
+        cfg.includeOutgoing = false;
+        cfg.includeLastHop = false;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('queryroutes failed');
+}
+
 export async function lnPay(
   opts,
   {

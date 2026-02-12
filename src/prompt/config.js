@@ -144,7 +144,7 @@ export const DEFAULT_PROMPT_SETUP_PATH = 'onchain/prompt/setup.json';
     autoApproveDefault: Boolean(serverRaw.auto_approve_default),
     maxSteps: parseIntLike(serverRaw.max_steps, 12) ?? 12,
     maxRepairs: parseIntLike(serverRaw.max_repairs, 2) ?? 2,
-    tradeAutoAutostart: serverRaw.tradeauto_autostart === undefined ? false : Boolean(serverRaw.tradeauto_autostart),
+    tradeAutoAutostart: serverRaw.tradeauto_autostart === undefined ? true : Boolean(serverRaw.tradeauto_autostart),
     tradeAutoChannels: parseChannelList(serverRaw.tradeauto_channels, ['0000intercomswapbtcusdt', '0000intercom']),
     tradeAutoTraceEnabled: Boolean(serverRaw.tradeauto_trace_enabled),
     tradeAutoAutostartRetryMs: Math.max(1000, Math.min(60_000, Math.trunc(tradeAutoAutostartRetryMsRaw))),

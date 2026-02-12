@@ -738,9 +738,9 @@ Edit `onchain/prompt/setup.json`:
 - `receipts.db` (optional, for `intercomswap_receipts_*` tools)
 - `ln.*`, `solana.*` (optional, depending on which tools you want enabled)
 - trade automation bootstrap (optional, defaults shown):
-  - `server.tradeauto_autostart` (default `false`): backend trade worker is off by default after promptd restart.
+  - `server.tradeauto_autostart` (default `true`): backend trade worker starts automatically on promptd startup.
   - `server.tradeauto_channels` (default `["0000intercomswapbtcusdt","0000intercom"]`).
-  - `server.tradeauto_trace_enabled` (default `false`).
+  - `server.tradeauto_trace_enabled` (default `false`): trace is off by default.
   - `server.tradeauto_autostart_retry_ms` (default `5000`), `server.tradeauto_autostart_max_attempts` (default `24`).
 
 Start the service:

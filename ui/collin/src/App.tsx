@@ -452,6 +452,7 @@ function App() {
 
   const [preflight, setPreflight] = useState<any>(null);
   const [preflightBusy, setPreflightBusy] = useState(false);
+  const [tradeAutoWorkerEnabled, setTradeAutoWorkerEnabled] = useState<boolean>(true);
   const [tradeAutoTraceEnabled, setTradeAutoTraceEnabled] = useState<boolean>(false);
   const [envInfo, setEnvInfo] = useState<any>(null);
   const [envBusy, setEnvBusy] = useState(false);
@@ -2099,24 +2100,30 @@ function App() {
 	        pushToast('success', 'Stack started');
 	      }
 
-      if (tradeAutoTraceEnabled) {
+      if (tradeAutoWorkerEnabled) {
         try {
           const channels = rendezvousChannels.slice(0, 64);
           await runToolFinal(
             'intercomswap_tradeauto_start',
             {
               channels: channels.length > 0 ? channels : ['0000intercomswapbtcusdt'],
-              trace_enabled: true,
+              trace_enabled: tradeAutoTraceEnabled,
               ln_liquidity_mode: 'aggregate',
+              enable_quote_from_offers: true,
+              enable_quote_from_rfqs: true,
+              enable_accept_quotes: true,
+              enable_invite_from_accepts: true,
+              enable_join_invites: true,
+              enable_settlement: true,
             },
             { auto_approve: true }
           );
-          await runToolFinal('intercomswap_tradeauto_trace_set', { trace_enabled: true }, { auto_approve: true });
+          await runToolFinal('intercomswap_tradeauto_trace_set', { trace_enabled: tradeAutoTraceEnabled }, { auto_approve: true });
         } catch (_e) {}
       }
 
       // Refresh status and auto-connect the sidechannel stream once SC-Bridge is up.
-      await refreshPreflight({ includeTradeAuto: tradeAutoTraceEnabled });
+      await refreshPreflight({ includeTradeAuto: true });
 	      if (!scConnected && !scConnecting && scStreamWantedRef.current) {
 	        await new Promise((r) => setTimeout(r, 250));
 	        void startScStream();
@@ -2156,7 +2163,7 @@ function App() {
 	  }
 
 
-  async function setTradeLoggingMode(next: boolean) {
+  async function setTradeWorkerMode(next: boolean) {
     if (runBusy || stackOpBusy) return;
     setRunBusy(true);
     setRunErr(null);
@@ -2167,25 +2174,63 @@ function App() {
           'intercomswap_tradeauto_start',
           {
             channels: channels.length > 0 ? channels : ['0000intercomswapbtcusdt'],
-            trace_enabled: true,
+            trace_enabled: tradeAutoTraceEnabled,
             ln_liquidity_mode: 'aggregate',
+            enable_quote_from_offers: true,
+            enable_quote_from_rfqs: true,
+            enable_accept_quotes: true,
+            enable_invite_from_accepts: true,
+            enable_join_invites: true,
+            enable_settlement: true,
           },
           { auto_approve: true }
         );
-        await runToolFinal('intercomswap_tradeauto_trace_set', { trace_enabled: true }, { auto_approve: true });
+        await runToolFinal('intercomswap_tradeauto_trace_set', { trace_enabled: tradeAutoTraceEnabled }, { auto_approve: true });
       } else {
-        try {
-          await runToolFinal('intercomswap_tradeauto_trace_set', { trace_enabled: false }, { auto_approve: true });
-        } catch (_e) {}
         await runToolFinal('intercomswap_tradeauto_stop', { reason: 'manual_stop' }, { auto_approve: true });
       }
-      setTradeAutoTraceEnabled(next);
-      pushToast('success', `Trade logging ${next ? 'enabled' : 'disabled'}`);
-      await refreshPreflight({ includeTradeAuto: next });
+      pushToast('success', `Trade worker ${next ? 'enabled' : 'disabled'}`);
+      await refreshPreflight({ includeTradeAuto: true });
     } catch (e: any) {
       const msg = e?.message || String(e);
       setRunErr(msg);
-      pushToast('error', `Trade logging toggle failed: ${msg}`);
+      pushToast('error', `Trade worker toggle failed: ${msg}`);
+    } finally {
+      setRunBusy(false);
+    }
+  }
+
+  async function setTradeTraceMode(next: boolean) {
+    if (runBusy || stackOpBusy) return;
+    setRunBusy(true);
+    setRunErr(null);
+    try {
+      // Trace requires a running worker. If the worker is off, best-effort start it first.
+      if (next && !(tradeAutoStatus?.running === true)) {
+        const channels = rendezvousChannels.slice(0, 64);
+        await runToolFinal(
+          'intercomswap_tradeauto_start',
+          {
+            channels: channels.length > 0 ? channels : ['0000intercomswapbtcusdt'],
+            trace_enabled: true,
+            ln_liquidity_mode: 'aggregate',
+            enable_quote_from_offers: true,
+            enable_quote_from_rfqs: true,
+            enable_accept_quotes: true,
+            enable_invite_from_accepts: true,
+            enable_join_invites: true,
+            enable_settlement: true,
+          },
+          { auto_approve: true }
+        );
+      }
+      await runToolFinal('intercomswap_tradeauto_trace_set', { trace_enabled: next }, { auto_approve: true });
+      pushToast('success', `Trade trace ${next ? 'enabled' : 'disabled'}`);
+      await refreshPreflight({ includeTradeAuto: true });
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setRunErr(msg);
+      pushToast('error', `Trade trace toggle failed: ${msg}`);
     } finally {
       setRunBusy(false);
     }
@@ -3391,7 +3436,7 @@ function App() {
     preflightRunSeqRef.current = runSeq;
     setPreflightBusy(true);
     const out: any = { ts: Date.now() };
-    const includeTradeAuto = opts.includeTradeAuto ?? tradeAutoTraceEnabled;
+    const includeTradeAuto = opts.includeTradeAuto ?? true;
     try {
       out.env = await runDirectToolOnce('intercomswap_env_get', {}, { auto_approve: false });
       setEnvInfo(out.env);
@@ -4203,7 +4248,7 @@ function App() {
     }, intervalMs);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [health?.ok, stackAnyRunning, stackGate.ok, tradeAutoTraceEnabled]);
+  }, [health?.ok, stackAnyRunning, stackGate.ok, tradeAutoTraceEnabled, tradeAutoWorkerEnabled]);
 
   useEffect(() => {
     const ok = Boolean(stackGate.ok);
@@ -4493,6 +4538,13 @@ function App() {
   const tradeAutoStatus = (preflight as any)?.tradeauto && typeof (preflight as any).tradeauto === 'object'
     ? ((preflight as any).tradeauto as any)
     : null;
+
+  // Sync UI toggles to backend truth (so reloads / remote restarts do not desync the buttons).
+  useEffect(() => {
+    if (!tradeAutoStatus || typeof tradeAutoStatus !== 'object') return;
+    if (typeof tradeAutoStatus.running === 'boolean') setTradeAutoWorkerEnabled(Boolean(tradeAutoStatus.running));
+    if (typeof tradeAutoStatus.trace_enabled === 'boolean') setTradeAutoTraceEnabled(Boolean(tradeAutoStatus.trace_enabled));
+  }, [tradeAutoStatus?.running, tradeAutoStatus?.trace_enabled]);
   const tradeAutoRecent = useMemo(() => {
     const rows = Array.isArray(tradeAutoStatus?.recent_events) ? tradeAutoStatus.recent_events : [];
     return rows
@@ -4855,17 +4907,24 @@ function App() {
               />
             </Panel>
 
-            <Panel title="Trade Automation Trace (Backend)">
+            <Panel title="Trade Automation (Backend)">
               <div className="row">
                 <button
-                  className={`btn small ${tradeAutoTraceEnabled ? 'ghost' : 'primary'}`}
-                  onClick={() => void setTradeLoggingMode(!tradeAutoTraceEnabled)}
+                  className={`btn small ${tradeAutoStatus?.running ? 'ghost' : 'primary'}`}
+                  onClick={() => void setTradeWorkerMode(!(tradeAutoStatus?.running === true))}
                   disabled={runBusy || stackOpBusy}
                 >
-                  {tradeAutoTraceEnabled ? 'Disable Trade Logging' : 'Enable Trade Logging'}
+                  {tradeAutoStatus?.running ? 'Disable Worker' : 'Enable Worker'}
                 </button>
-                <span className={`chip ${tradeAutoTraceEnabled ? 'hi' : 'warn'}`}>
-                  {tradeAutoTraceEnabled ? 'trace on' : 'trace off'}
+                <button
+                  className={`btn small ${tradeAutoStatus?.trace_enabled ? 'ghost' : 'primary'}`}
+                  onClick={() => void setTradeTraceMode(!(tradeAutoStatus?.trace_enabled === true))}
+                  disabled={runBusy || stackOpBusy}
+                >
+                  {tradeAutoStatus?.trace_enabled ? 'Disable Trace' : 'Enable Trace'}
+                </button>
+                <span className={`chip ${tradeAutoStatus?.trace_enabled ? 'hi' : 'warn'}`}>
+                  {tradeAutoStatus?.trace_enabled ? 'trace on' : 'trace off'}
                 </span>
                 <span className={`chip ${tradeAutoStatus?.running ? 'hi' : 'warn'}`}>
                   {tradeAutoStatus?.running ? 'worker on' : 'worker off'}
@@ -4880,22 +4939,22 @@ function App() {
                   <span className="chip">last tick: {msToUtcIso(Number(tradeAutoStatus.stats.last_tick_at))}</span>
                 ) : null}
               </div>
-              {!tradeAutoTraceEnabled ? (
+              {!tradeAutoStatus?.trace_enabled ? (
                 <div className="muted small" style={{ marginTop: 6 }}>
-                  Trade logging is disabled by default. Enabling it starts the backend worker and trace together.
+                  Trace is disabled by default. The worker can still trade automatically while trace is off.
                 </div>
               ) : null}
-              {tradeAutoTraceEnabled && preflight?.tradeauto_error ? (
+              {preflight?.tradeauto_error ? (
                 <div className="alert bad" style={{ marginTop: 8 }}>
                   tradeauto_status: {String(preflight.tradeauto_error)}
                 </div>
               ) : null}
-              {tradeAutoTraceEnabled && tradeAutoStatus?.stats?.last_error ? (
+              {tradeAutoStatus?.stats?.last_error ? (
                 <div className="alert warn" style={{ marginTop: 8 }}>
                   last error: {String(tradeAutoStatus.stats.last_error)}
                 </div>
               ) : null}
-              {tradeAutoTraceEnabled ? (
+              {tradeAutoStatus?.trace_enabled ? (
                 <>
                   <div className="muted small" style={{ marginTop: 6 }}>
                     backend trace from <span className="mono">intercomswap_tradeauto_status</span> (newest first)
