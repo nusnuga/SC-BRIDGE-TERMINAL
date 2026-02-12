@@ -544,6 +544,11 @@
 .rowitem.expired .muted {
   color: #8c97aa;
 }
+.rowitem.expired .trade-activity-headline,
+.rowitem.expired .trade-activity-price,
+.rowitem.expired .trade-activity-details {
+  color: #8c97aa;
+}
 .rowitem-top {
   display: flex;
   align-items: center;

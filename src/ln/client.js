@@ -232,17 +232,30 @@ export async function lnConnect(opts, { peer }) {
   return lnClnCli({ ...opts, args: ['connect', p] });
 }
 
-export async function lnFundChannel(opts, { nodeId, amountSats, satPerVbyte = null, block = true }) {
+export async function lnFundChannel(opts, { nodeId, amountSats, satPerVbyte = null, pushSats = null, block = true }) {
   const id = String(nodeId || '').trim();
   const amt = Number(amountSats);
   if (!id) throw new Error('Missing nodeId');
   if (!Number.isFinite(amt) || amt <= 0) throw new Error('Invalid amountSats');
+  const push =
+    pushSats === null || pushSats === undefined || pushSats === ''
+      ? 0
+      : Number(pushSats);
+  if (!Number.isFinite(push) || !Number.isInteger(push) || push < 0) {
+    throw new Error('Invalid pushSats (must be an integer >= 0)');
+  }
+  if (push >= amt) throw new Error('Invalid pushSats (must be less than amountSats)');
 
   if (opts.impl === 'lnd') {
     const args = ['openchannel', '--node_key', id, '--local_amt', String(amt)];
+    if (push > 0) args.push('--push_amt', String(push));
     if (Number.isInteger(satPerVbyte) && satPerVbyte > 0) args.push('--sat_per_vbyte', String(Math.trunc(satPerVbyte)));
     if (block) args.push('--block');
     return lnLndCli({ ...opts, args });
+  }
+
+  if (push > 0) {
+    throw new Error('pushSats is currently supported for lnd only');
   }
 
   // For CLN, use named args so we can safely plumb optional fields without relying on positional ordering.

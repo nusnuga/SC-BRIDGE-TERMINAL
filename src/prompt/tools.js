@@ -911,6 +911,13 @@ export const INTERCOMSWAP_TOOLS = [
         description: 'Optional nodeid@host:port. If node_id is omitted, the nodeid part is used.',
       },
       amount_sats: { type: 'integer', minimum: 1_000, maximum: 10_000_000_000 },
+      push_sats: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 10_000_000_000,
+        description:
+          'Optional initial push amount (sats) to remote peer for immediate inbound on your side. Must be < amount_sats. LND only.',
+      },
       sat_per_vbyte: { type: 'integer', minimum: 1, maximum: 10_000, description: 'Optional fee rate for the on-chain funding transaction.' },
     },
     required: ['amount_sats'],

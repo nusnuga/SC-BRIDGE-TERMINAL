@@ -4646,12 +4646,16 @@ export class ToolExecutor {
       return lnConnect(this.ln, { peer });
     }
     if (toolName === 'intercomswap_ln_fundchannel') {
-      assertAllowedKeys(args, toolName, ['node_id', 'peer', 'amount_sats', 'sat_per_vbyte']);
+      assertAllowedKeys(args, toolName, ['node_id', 'peer', 'amount_sats', 'push_sats', 'sat_per_vbyte']);
       requireApproval(toolName, autoApprove);
       const nodeIdRaw = expectOptionalString(args, toolName, 'node_id', { min: 66, max: 66, pattern: /^[0-9a-fA-F]{66}$/ });
       const peer = expectOptionalString(args, toolName, 'peer', { min: 10, max: 200 });
       const amountSats = expectInt(args, toolName, 'amount_sats', { min: 1000 });
+      const pushSats = expectOptionalInt(args, toolName, 'push_sats', { min: 0, max: 10_000_000_000 }) ?? 0;
       const satPerVbyte = expectOptionalInt(args, toolName, 'sat_per_vbyte', { min: 1, max: 10_000 });
+      if (pushSats >= amountSats) {
+        throw new Error(`${toolName}: push_sats must be less than amount_sats`);
+      }
 
       let nodeId = '';
       if (nodeIdRaw) {
@@ -4679,6 +4683,7 @@ export class ToolExecutor {
           node_id: nodeId,
           ...(peer ? { peer } : {}),
           amount_sats: amountSats,
+          push_sats: pushSats,
           sat_per_vbyte: satPerVbyte,
         };
 
@@ -4713,7 +4718,7 @@ export class ToolExecutor {
           if (msg.startsWith(`${toolName}: insufficient spendable wallet funds`)) throw err;
         }
       }
-      return lnFundChannel(this.ln, { nodeId, amountSats, satPerVbyte, block: true });
+      return lnFundChannel(this.ln, { nodeId, amountSats, pushSats, satPerVbyte, block: true });
     }
     if (toolName === 'intercomswap_ln_splice') {
       assertAllowedKeys(args, toolName, ['channel_id', 'relative_sats', 'sat_per_vbyte', 'max_rounds', 'sign_first']);

@@ -582,6 +582,7 @@ function App() {
     }
   });
   const [lnChannelAmountSats, setLnChannelAmountSats] = useState<number>(1_000_000);
+  const [lnChannelPushSats, setLnChannelPushSats] = useState<number>(0);
   const [lnChannelSatPerVbyte, setLnChannelSatPerVbyte] = useState<number>(2);
   const [lnChannelCloseSatPerVbyte, setLnChannelCloseSatPerVbyte] = useState<number>(2);
   const [lnSpliceChannelId, setLnSpliceChannelId] = useState<string>('');
@@ -4431,7 +4432,7 @@ function App() {
   const lnImpl = String((preflight as any)?.env?.ln?.impl || (preflight as any)?.ln_info?.implementation || envInfo?.ln?.impl || '').trim().toLowerCase();
 	  const lnBackend = String(envInfo?.ln?.backend || '');
   const lnRebalanceSupported = lnImpl === 'lnd';
-  const lnRebalanceMinChannelsOk = lnChannelCount >= 2;
+  const lnRebalanceMinChannelsOk = lnActiveChannelCount >= 2;
   const lnSpliceBackendSupported = lnImpl === 'cln';
   const lnUnlockHelperSupported = lnImpl === 'lnd' && lnBackend === 'docker';
 	  const lnNetwork = String(envInfo?.ln?.network || '');
@@ -6788,7 +6789,7 @@ function App() {
                   );
                 })()}
 
-                <div className="gridform" style={{ marginTop: 8 }}>
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div className="field">
                     <div className="field-hd">
                       <span className="mono">channel amount</span>
@@ -6797,37 +6798,52 @@ function App() {
                   </div>
                   <div className="field">
                     <div className="field-hd">
-                      <span className="mono">open fee rate</span>
-                      <span className="muted small">sat/vB</span>
+                      <span className="mono">push inbound (optional)</span>
                     </div>
-                    <input
-                      className="input mono"
-                      type="number"
-                      min={1}
-                      max={10000}
-                      value={String(lnChannelSatPerVbyte)}
-                      onChange={(e) => {
-                        const n = Number.parseInt(e.target.value, 10);
-                        if (Number.isFinite(n)) setLnChannelSatPerVbyte(Math.max(1, Math.min(10000, Math.trunc(n))));
-                      }}
+                    <BtcSatsField
+                      name="ln_channel_push"
+                      sats={lnChannelPushSats}
+                      onSats={(n) => setLnChannelPushSats(Math.max(0, Number(n || 0)))}
                     />
+                    <div className="muted small">
+                      Pushes initial balance to peer on open so your side gets immediate inbound capacity.
+                    </div>
                   </div>
-                  <div className="field">
-                    <div className="field-hd">
-                      <span className="mono">close fee rate</span>
-                      <span className="muted small">sat/vB</span>
+                  <div className="gridform">
+                    <div className="field">
+                      <div className="field-hd">
+                        <span className="mono">open fee rate</span>
+                        <span className="muted small">sat/vB</span>
+                      </div>
+                      <input
+                        className="input mono"
+                        type="number"
+                        min={1}
+                        max={10000}
+                        value={String(lnChannelSatPerVbyte)}
+                        onChange={(e) => {
+                          const n = Number.parseInt(e.target.value, 10);
+                          if (Number.isFinite(n)) setLnChannelSatPerVbyte(Math.max(1, Math.min(10000, Math.trunc(n))));
+                        }}
+                      />
                     </div>
-                    <input
-                      className="input mono"
-                      type="number"
-                      min={1}
-                      max={10000}
-                      value={String(lnChannelCloseSatPerVbyte)}
-                      onChange={(e) => {
-                        const n = Number.parseInt(e.target.value, 10);
-                        if (Number.isFinite(n)) setLnChannelCloseSatPerVbyte(Math.max(1, Math.min(10000, Math.trunc(n))));
-                      }}
-                    />
+                    <div className="field">
+                      <div className="field-hd">
+                        <span className="mono">close fee rate</span>
+                        <span className="muted small">sat/vB</span>
+                      </div>
+                      <input
+                        className="input mono"
+                        type="number"
+                        min={1}
+                        max={10000}
+                        value={String(lnChannelCloseSatPerVbyte)}
+                        onChange={(e) => {
+                          const n = Number.parseInt(e.target.value, 10);
+                          if (Number.isFinite(n)) setLnChannelCloseSatPerVbyte(Math.max(1, Math.min(10000, Math.trunc(n))));
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -6848,7 +6864,20 @@ function App() {
                       }
                       const node_id = String(m[1]).toLowerCase();
                       const amount_sats = Number(lnChannelAmountSats || 0);
+                      const push_sats = Number(lnChannelPushSats || 0);
                       const sat_per_vbyte = Number(lnChannelSatPerVbyte || 0);
+                      if (!Number.isInteger(push_sats) || push_sats < 0) {
+                        pushToast('error', 'Push inbound must be an integer >= 0 sats');
+                        return;
+                      }
+                      if (push_sats > 0 && lnImpl !== 'lnd') {
+                        pushToast('error', 'Push inbound is currently supported for LND only.');
+                        return;
+                      }
+                      if (push_sats >= amount_sats) {
+                        pushToast('error', 'Push inbound must be less than channel amount');
+                        return;
+                      }
                       if (typeof lnWalletSats === 'number' && Number.isFinite(lnWalletSats) && lnWalletSats > 0) {
                         const feeBuffer = Math.max(
                           LN_OPEN_TX_FEE_BUFFER_MIN_SATS,
@@ -6869,7 +6898,9 @@ function App() {
                       const ok =
                         autoApprove ||
                         window.confirm(
-                          `Connect and open channel?\n\npeer: ${peer}\namount_sats: ${amount_sats}\nfee: ${sat_per_vbyte > 0 ? `${sat_per_vbyte} sat/vB` : '(default)'}`
+                          `Connect and open channel?\n\npeer: ${peer}\namount_sats: ${amount_sats}\npush_sats: ${push_sats}\nfee: ${
+                            sat_per_vbyte > 0 ? `${sat_per_vbyte} sat/vB` : '(default)'
+                          }`
                         );
                       if (!ok) return;
                       try {
@@ -6888,6 +6919,7 @@ function App() {
                           {
                             node_id,
                             amount_sats,
+                            push_sats: push_sats > 0 ? push_sats : undefined,
                             sat_per_vbyte: sat_per_vbyte > 0 ? sat_per_vbyte : undefined,
                           },
                           { auto_approve: true }
@@ -6899,7 +6931,11 @@ function App() {
                           : hint.channelPoint
                             ? ` (channel ${hint.channelPoint.slice(0, 22)}…)`
                             : '';
-                        pushToast('success', `Channel open submitted${detail}`, { ttlMs: 8_000 });
+                        pushToast(
+                          'success',
+                          `Channel open submitted${detail}${push_sats > 0 ? ` with push ${push_sats} sats` : ''}`,
+                          { ttlMs: 8_000 }
+                        );
                         void refreshPreflight();
                       } catch (e: any) {
                         pushToast('error', e?.message || String(e));
@@ -6932,7 +6968,7 @@ function App() {
 	                      {!lnRebalanceMinChannelsOk ? (
 	                        <div className="alert warn" style={{ marginTop: 8 }}>
 	                          <b>Likely no route.</b> Self-pay rebalance usually needs at least <span className="mono">2 active channels</span>{' '}
-	                          to form a circular route. Current active/known channels: <span className="mono">{lnChannelCount}</span>.
+	                          to form a circular route. Current active/known channels: <span className="mono">{lnActiveChannelCount}</span>/<span className="mono">{lnChannelCount}</span>.
 	                        </div>
 	                      ) : null}
                       {lnWalletLocked ? (
@@ -6999,7 +7035,6 @@ function App() {
 	                            runBusy ||
                             lnWalletLocked ||
 	                            !lnRebalanceSupported ||
-	                            !lnRebalanceMinChannelsOk ||
 	                            !Number.isInteger(lnRebalanceAmountSats) ||
 	                            Number(lnRebalanceAmountSats) <= 0
 	                          }
@@ -7009,7 +7044,10 @@ function App() {
                               return;
                             }
                             if (!lnRebalanceMinChannelsOk) {
-                              pushToast('error', 'Rebalance requires at least 2 active channels to form a return route.');
+                              pushToast(
+                                'error',
+                                'Rebalance requires at least 2 active channels to form a return route. Open another channel (or open with push inbound) first.'
+                              );
                               return;
                             }
 	                            const amount_sats = Number(lnRebalanceAmountSats || 0);
@@ -9047,37 +9085,66 @@ function QuoteRow({
   const btcUsd = btcSats !== null && oracleBtcUsd ? (btcSats / 1e8) * oracleBtcUsd : null;
   const usdtNum = usdtAtomic ? atomicToNumber(usdtAtomic, 6) : null;
   const usdtUsd = usdtNum !== null && oracleUsdtUsd ? usdtNum * oracleUsdtUsd : null;
+  const btcBtc = btcSats !== null ? btcSats / 1e8 : null;
+  const btcDisplay = btcBtc !== null ? formatHumanNumber(btcBtc, { maxFractionDigits: 8 }) : '?';
+  const usdtDisplay =
+    usdtNum !== null
+      ? formatHumanNumber(usdtNum, { maxFractionDigits: 6 })
+      : usdtAtomic
+        ? atomicToDecimal(usdtAtomic, 6)
+        : '?';
+  const pricePerBtc = btcBtc !== null && btcBtc > 0 && usdtNum !== null ? usdtNum / btcBtc : null;
+  const priceDisplay = pricePerBtc !== null ? formatHumanNumber(pricePerBtc, { maxFractionDigits: 2 }) : '?';
+  const feeDisplay = `${typeof platformFee === 'number' ? `${platformFee} bps (${bpsToPctDisplay(platformFee)}%)` : '?'} platform, ${
+    typeof tradeFee === 'number' ? `${tradeFee} bps (${bpsToPctDisplay(tradeFee)}%)` : '?'
+  } trade, ${typeof totalFee === 'number' ? `${totalFee} bps (${bpsToPctDisplay(totalFee)}%)` : '?'} total`;
+  const refundWindowDisplay = typeof solWindow === 'number' ? `${secToHuman(solWindow)} (${solWindow}s)` : '?';
   return (
     <div className={`rowitem ${expired ? 'expired' : ''}`} role="button" onClick={onSelect}>
       <div className="rowitem-top">
-        {postedIso ? <span className="mono dim">{postedIso}</span> : null}
         <span className="mono chip">{evt.channel}</span>
         {expired ? <span className="mono chip warn">expired</span> : null}
-        {tradeId ? <span className="mono dim">{tradeId}</span> : null}
       </div>
       <div className="rowitem-mid">
-        <span className="mono">quote for your RFQ</span>
-        {rfqId ? <span className="mono dim">rfq_id: {rfqId}</span> : null}
-        <span className="mono">
-          BTC: {btcSats !== null ? `${satsToBtcDisplay(btcSats)} BTC (${btcSats} sats)` : '?'}
-          {btcUsd !== null ? ` ≈ ${fmtUsd(btcUsd)}` : ''}
-        </span>
-        <span className="mono">
-          USDT: {usdtAtomic ? `${atomicToDecimal(usdtAtomic, 6)} (${usdtAtomic})` : '?'}
-          {usdtUsd !== null ? ` ≈ ${fmtUsd(usdtUsd)}` : ''}
-        </span>
-        <span className="mono">
-          fees:{' '}
-          {typeof platformFee === 'number' ? `${platformFee} bps (${bpsToPctDisplay(platformFee)}%)` : '?'} platform,{' '}
-          {typeof tradeFee === 'number' ? `${tradeFee} bps (${bpsToPctDisplay(tradeFee)}%)` : '?'} trade,{' '}
-          {typeof totalFee === 'number' ? `${totalFee} bps (${bpsToPctDisplay(totalFee)}%)` : '?'} total
-        </span>
-        <span className="mono">
-          sol window: {typeof solWindow === 'number' ? `${secToHuman(solWindow)} (${solWindow}s)` : '?'}
-        </span>
-        <span className="mono">
-          expires: {validUntilIso || '?'}{typeof validUntil === 'number' ? ` (${validUntil})` : ''}
-        </span>
+        <div className="trade-activity">
+          <div className="trade-activity-headline">
+            Sell <span className="mono">{btcDisplay}</span> BTC for <span className="mono">{usdtDisplay}</span> USDT
+          </div>
+          <div className="trade-activity-price">
+            Price / BTC: <span className="mono">{priceDisplay}</span> USDT
+          </div>
+          <div className="trade-activity-details">
+            <span>
+              <span className="muted">Quote:</span> <span className="mono">{shortMonoId(tradeId) || '?'}</span>
+            </span>
+            <span>
+              <span className="muted">RFQ ID:</span> <span className="mono">{shortMonoId(rfqId) || '?'}</span>
+            </span>
+            <span>
+              <span className="muted">Posted:</span> <span className="mono">{postedIso || '?'}</span>
+            </span>
+            <span>
+              <span className="muted">Expires:</span>{' '}
+              <span className="mono">{validUntilIso || '?'}{typeof validUntil === 'number' ? ` (${validUntil})` : ''}</span>
+            </span>
+            <span>
+              <span className="muted">Fees:</span> <span className="mono">{feeDisplay}</span>
+            </span>
+            <span>
+              <span className="muted">Refund Window:</span> <span className="mono">{refundWindowDisplay}</span>
+            </span>
+            {btcUsd !== null ? (
+              <span>
+                <span className="muted">BTC Value:</span> <span className="mono">{fmtUsd(btcUsd)}</span>
+              </span>
+            ) : null}
+            {usdtUsd !== null ? (
+              <span>
+                <span className="muted">USDT Value:</span> <span className="mono">{fmtUsd(usdtUsd)}</span>
+              </span>
+            ) : null}
+          </div>
+        </div>
       </div>
       <div className="rowitem-bot">
         <button

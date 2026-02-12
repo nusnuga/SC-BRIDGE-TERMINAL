@@ -192,6 +192,7 @@ This repo also provides long-running RFQ “agent bots” that sit in an RFQ cha
   - **Permission note:** if your agent/runtime cannot execute `docker` commands (or cannot access the Docker daemon), stop and ask the human operator to start Docker and run the needed commands on your behalf (then paste the output back) before proceeding.
 - LN liquidity prerequisites:
   - Swaps will fail if the payer has no outbound liquidity, or the invoice receiver has no inbound liquidity.
+  - Channel policy in this stack: **public channels only** (private channel toggle is removed/unsupported).
   - Liquidity guardrail modes (used by RFQ/accept flows and Collin):
     - `single_channel` (default): one active channel must satisfy the full required sats for that line.
     - `aggregate`: sum of active channels may satisfy the required sats (best-effort; real route can still fail).
@@ -199,12 +200,30 @@ This repo also provides long-running RFQ “agent bots” that sit in an RFQ cha
   - Practical first-trade rule: if a node opens its own first channel, it usually starts with near-100% local/outbound and ~0 remote/inbound.
     - Result: that node can usually **sell BTC first** (pay LN), but cannot immediately **sell USDT first** (receive LN) until inbound is bootstrapped.
     - Inbound bootstrap options:
-      1) have a counterparty open a channel to this node, or
-      2) rebalance by paying an invoice from this node to another controlled node.
+      1) open a **new public channel** with `push_sats > 0` (recommended deterministic bootstrap), or
+      2) have a counterparty open a channel to this node, or
+      3) rebalance by paying an invoice from this node to another controlled node.
+  - Deterministic funding flow (BTC -> channel liquidity):
+    1) fund LN on-chain wallet (`intercomswap_ln_newaddr`, then confirm with `intercomswap_ln_listfunds`)
+    2) connect peer (`intercomswap_ln_connect`)
+    3) open **public** channel (`intercomswap_ln_fundchannel`) with:
+       - `amount_sats` = channel capacity
+       - `push_sats` = initial inbound seed (LND)
+    4) wait until channel is active (`intercomswap_ln_listchannels`)
+    5) confirm both outbound + inbound before posting tradable lines
+  - `push_sats` planning guidance (LND openchannel):
+    - `0-10%` of `amount_sats`: outbound-heavy, good if you mostly need to pay LN (Sell BTC).
+    - `20-40%` of `amount_sats`: balanced bootstrap for two-sided trading (recommended default).
+    - `40-60%` of `amount_sats`: inbound-heavy, good if you must receive LN quickly (Sell USDT), but leaves less outbound.
+    - Hard rule: `push_sats < amount_sats`; peer/channel minimums still apply.
   - Ongoing trading reality (important for profitability):
     - Liquidity is directional and finite per channel set. One-sided flow eventually blocks one side of quoting.
     - Roughly: if you sold ~X sats BTC (paid out) on a channel set, you can receive about that much back before you must rebalance again (fees/routing reduce the exact number).
     - For market-making, run both sides (sell BTC + sell USDT), price in routing/rebalance costs, and rebalance when flow becomes one-sided.
+  - If inbound/outbound bootstrap is skipped:
+    - receiver-side settlement commonly fails with `NO_ROUTE`
+    - `Sell USDT` paths become unfillable even if Solana inventory is sufficient
+    - automation stalls/retries and listings become effectively non-executable
   - Channels are not opened per trade. Open channels ahead of time (or rely on routing if you have a well-connected node).
   - See: "Live Ops Checklist" -> "Lightning liquidity prerequisites".
 - Solana RPC + keypair paths stored under `onchain/` + the SPL mint (`USDT` on mainnet).
@@ -472,6 +491,7 @@ A→Z operating flow:
    - BTC/LN wallet funding:
      - Get funding address: `intercomswap_ln_newaddr`
      - After external send, wait until `intercomswap_ln_listfunds` shows confirmed on-chain funds.
+     - Do not skip this: channel opens consume on-chain wallet funds + fees + LND anchor reserve.
    - Solana signer funding:
      - Get signer address: `intercomswap_sol_signer_pubkey`
      - Fund SOL for tx fees/rent.
@@ -480,7 +500,13 @@ A→Z operating flow:
      - Test/dev only: mint transfer helpers are allowed (`intercomswap_sol_mint_create`, `intercomswap_sol_mint_to`).
 4. Lightning channel procedures (required for actual LN settlement)
    - Connect peer: `intercomswap_ln_connect` (`node_id`, `host`, `port`).
-   - Open channel: `intercomswap_ln_fundchannel` (`node_id`, `satoshis`, optional fee params).
+   - Open channel (public only): `intercomswap_ln_fundchannel` (`node_id`, `amount_sats`, optional `push_sats`, optional fee params).
+   - Preferred inbound bootstrap at open:
+     - set `push_sats` when opening the channel (LND).
+     - recommended starting ratio: `push_sats = 20-40%` of `amount_sats` for two-sided trading.
+     - if you need immediate inbound-heavy behavior (Sell USDT first), use `40-60%`.
+     - if you are outbound-heavy (Sell BTC first), keep push low (`0-10%`).
+     - always keep `push_sats < amount_sats`.
    - Verify channel state/capacity: `intercomswap_ln_listchannels`.
    - Direction guardrail (must check before posting):
      - `Sell BTC` requires outbound/local liquidity.
@@ -497,6 +523,10 @@ A→Z operating flow:
        - `aggregate`: allows larger lines across multiple channels but remains best-effort at payment path time.
      - If liquidity is insufficient, do not post that line; rebalance first or switch to the opposite side.
      - Treat rebalance/routing costs as part of spread; otherwise profitable trading degrades into churn.
+   - Failure implications if skipped:
+     - trades can fail at `ln_pay` with `NO_ROUTE`
+     - maker quote/offer paths may hard-fail on inbound checks
+     - posted lines may look valid in UI but remain unfillable in practice
    - Add/remove liquidity:
      - If backend supports splicing: `intercomswap_ln_splice`.
      - If not: open additional channels and/or close/reopen (`intercomswap_ln_closechannel`).
@@ -1454,6 +1484,7 @@ Lightning channel note:
 - A direct channel is only between 2 LN nodes, but you can usually pay many different counterparties via routing across the LN network (if a route exists).
 - Channel policy note:
   - Channel opening is public-only in this stack (no private-channel toggle).
+  - For deterministic inbound bootstrap on new channels, use `intercomswap_ln_fundchannel` with `push_sats` (LND), following the ratio guidance in "Live Ops Checklist" step 4.
   - Invoice creation follows normal routing behavior; settlement requires reachable routes and receiver inbound.
   - Maker-side quote/offer posting (`intercomswap_offer_post`, `intercomswap_quote_post`, `intercomswap_quote_post_from_rfq`) now hard-fails early on insufficient LN inbound liquidity.
   - Maker invoice posting (`intercomswap_swap_ln_invoice_create_and_post`) also hard-fails on insufficient inbound for the negotiated BTC amount.
