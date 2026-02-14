@@ -3133,25 +3133,29 @@ export class ToolExecutor {
           if (!allowed.includes(k)) throw new Error(`${toolName}: offers[${i}].${k} unexpected`);
         }
 
-        const pair = expectString(offer, toolName, 'pair', { min: 1, max: 64 });
+        const pair = expectOptionalString(offer, toolName, 'pair', { min: 1, max: 64 }) ?? PAIR.BTC_LN__USDT_SOL;
         if (pair !== PAIR.BTC_LN__USDT_SOL) throw new Error(`${toolName}: offers[${i}].pair unsupported`);
-        const have = expectString(offer, toolName, 'have', { min: 1, max: 32 });
-        const want = expectString(offer, toolName, 'want', { min: 1, max: 32 });
+        const have = expectOptionalString(offer, toolName, 'have', { min: 1, max: 32 }) ?? ASSET.USDT_SOL;
+        const want = expectOptionalString(offer, toolName, 'want', { min: 1, max: 32 }) ?? ASSET.BTC_LN;
         if (have !== ASSET.USDT_SOL) throw new Error(`${toolName}: offers[${i}].have must be ${ASSET.USDT_SOL}`);
         if (want !== ASSET.BTC_LN) throw new Error(`${toolName}: offers[${i}].want must be ${ASSET.BTC_LN}`);
 
         const btcSats = expectInt(offer, toolName, 'btc_sats', { min: 1 });
         const usdtAmount = normalizeAtomicAmount(expectString(offer, toolName, 'usdt_amount', { max: 64 }), `offers[${i}].usdt_amount`);
 
-        const maxPlatformFeeBps = expectInt(offer, toolName, 'max_platform_fee_bps', { min: 0, max: 500 });
-        const maxTradeFeeBps = expectInt(offer, toolName, 'max_trade_fee_bps', { min: 0, max: 1000 });
-        const maxTotalFeeBps = expectInt(offer, toolName, 'max_total_fee_bps', { min: 0, max: 1500 });
+        const maxPlatformFeeBps = expectOptionalInt(offer, toolName, 'max_platform_fee_bps', { min: 0, max: 500 }) ?? FIXED_PLATFORM_FEE_BPS;
+        const maxTradeFeeBps = expectOptionalInt(offer, toolName, 'max_trade_fee_bps', { min: 0, max: 1000 }) ?? DEFAULT_TRADE_FEE_BPS;
+        const maxTotalFeeBps = expectOptionalInt(offer, toolName, 'max_total_fee_bps', { min: 0, max: 1500 }) ?? DEFAULT_TOTAL_FEE_BPS;
         if (maxPlatformFeeBps + maxTradeFeeBps > maxTotalFeeBps) {
           throw new Error(`${toolName}: offers[${i}] max_total_fee_bps must be >= platform+trade`);
         }
 
-        const minWin = expectInt(offer, toolName, 'min_sol_refund_window_sec', { min: SOL_REFUND_MIN_SEC, max: SOL_REFUND_MAX_SEC });
-        const maxWin = expectInt(offer, toolName, 'max_sol_refund_window_sec', { min: SOL_REFUND_MIN_SEC, max: SOL_REFUND_MAX_SEC });
+        const minWin =
+          expectOptionalInt(offer, toolName, 'min_sol_refund_window_sec', { min: SOL_REFUND_MIN_SEC, max: SOL_REFUND_MAX_SEC }) ??
+          SOL_REFUND_DEFAULT_SEC;
+        const maxWin =
+          expectOptionalInt(offer, toolName, 'max_sol_refund_window_sec', { min: SOL_REFUND_MIN_SEC, max: SOL_REFUND_MAX_SEC }) ??
+          SOL_REFUND_MAX_SEC;
         if (minWin > maxWin) throw new Error(`${toolName}: offers[${i}] min_sol_refund_window_sec must be <= max_sol_refund_window_sec`);
 
         maxOffers.push({
