@@ -1,34 +1,65 @@
 import http from "http";
 import { URL } from "url";
 
-const PORT = Number(process.env.PORT || 8787);
+const PORT = 8787;
 const HOST = "127.0.0.1";
 
-function send(res, code, obj) {
-  const body = JSON.stringify(obj);
-  res.writeHead(code, {
-    "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type"
+async function fetchJSON(url) {
+  const r = await fetch(url, {
+    headers: {
+      "accept": "application/json"
+    }
   });
-  res.end(body);
+  return await r.json();
+}
+
+function send(res, code, obj) {
+  res.writeHead(code, {
+    "content-type": "application/json",
+    "access-control-allow-origin": "*"
+  });
+  res.end(JSON.stringify(obj));
 }
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.method === "OPTIONS") return send(res, 200, { ok: true });
+    const url = new URL(req.url, `http://${req.headers.host}`);
 
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-
+    // ✅ HEALTH
     if (url.pathname === "/api/health") {
-      return send(res, 200, { ok: true, name: "sc-bridge-terminal-api", port: PORT });
+      return send(res, 200, { ok: true });
     }
 
-    // fallback
-    return send(res, 404, { ok: false, error: "Not found", path: url.pathname });
+    // ✅ SIMPLE PRICE
+    if (url.pathname === "/api/coingecko/simple_price") {
+      const ids = url.searchParams.get("ids");
+      const vs = url.searchParams.get("vs") || "usd";
+
+      const data = await fetchJSON(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=${vs}&include_24hr_change=true`
+      );
+
+      return send(res, 200, { ok: true, data });
+    }
+
+    // ✅ MARKET CHART
+    if (url.pathname === "/api/coingecko/market_chart") {
+      const id = url.searchParams.get("id");
+      const vs = url.searchParams.get("vs") || "usd";
+      const days = url.searchParams.get("days") || "7";
+
+      const data = await fetchJSON(
+        `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=${vs}&days=${days}`
+      );
+
+      return send(res, 200, { ok: true, data });
+    }
+
+    // ❌ fallback
+    return send(res, 404, { ok: false, error: "Not found" });
+
   } catch (e) {
-    return send(res, 500, { ok: false, error: String(e?.message || e) });
+    return send(res, 500, { ok: false, error: String(e.message) });
   }
 });
 
