@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useMemo } from 'react'
 import type { TokenDef } from '../lib/tokenCatalog'
 import { fmtMoney, fmtPct } from '../lib/format'
 
@@ -9,79 +9,41 @@ export default function PriceTicker(props: { active: TokenDef; prices: PricesMap
   const usd = p?.usd ?? null
   const ch = p?.usd_24h_change ?? null
 
-  const chColor = typeof ch === 'number' ? (ch >= 0 ? '#18f2a4' : '#ff4d6d') : '#e8f0ff'
+  const changeClass = useMemo(() => {
+    if (typeof ch !== 'number') return 'chip'
+    return ch >= 0 ? 'chip hi' : 'chip danger'
+  }, [ch])
 
   return (
-    <div className="panel railCard">
-      <div className="railHead">
-        <div className="railTitle">Market Telemetry</div>
-        {props.active.isTracTask ? <span className="pill pillTrac">TRAC TASK</span> : <span className="pill">LIVE</span>}
+    <div className="field">
+      <div className="field-hd">
+        <span className="mono muted">Market Telemetry</span>
+        <span className={props.active.isTracTask ? 'chip hi' : 'chip'}>{props.active.isTracTask ? 'TRAC TASK' : 'LIVE'}</span>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-        <div
-          style={{
-            fontSize: 12,
-            letterSpacing: '.18em',
-            textTransform: 'uppercase',
-            color: 'rgba(155,176,214,.85)',
-            fontWeight: 900
-          }}
-        >
-          {props.active.symbol}
-        </div>
-        <div style={{ fontSize: 28, fontWeight: 950, lineHeight: 1 }}>{fmtMoney(usd ?? undefined)}</div>
-      </div>
-
-      <div style={{ height: 1, background: 'rgba(60,95,190,.18)', margin: '12px 0' }} />
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <div
-          style={{
-            padding: 10,
-            borderRadius: 14,
-            border: '1px solid rgba(60,95,190,.18)',
-            background: 'rgba(5,7,13,.35)'
-          }}
-        >
-          <div
-            style={{
-              fontSize: 11,
-              letterSpacing: '.10em',
-              textTransform: 'uppercase',
-              color: 'rgba(155,176,214,.85)',
-              marginBottom: 6
-            }}
-          >
-            24H
-          </div>
-          <div style={{ fontSize: 13, fontWeight: 900, color: chColor }}>{fmtPct(ch ?? undefined)}</div>
+      <div className="kpi-row">
+        <div className="kpi">
+          <div className="kpi-label">Asset</div>
+          <div className="kpi-value mono">{props.active.symbol}</div>
         </div>
 
-        <div
-          style={{
-            padding: 10,
-            borderRadius: 14,
-            border: '1px solid rgba(60,95,190,.18)',
-            background: 'rgba(5,7,13,.35)'
-          }}
-        >
-          <div
-            style={{
-              fontSize: 11,
-              letterSpacing: '.10em',
-              textTransform: 'uppercase',
-              color: 'rgba(155,176,214,.85)',
-              marginBottom: 6
-            }}
-          >
-            SOURCE
-          </div>
-          <div style={{ fontSize: 13, fontWeight: 900 }}>CoinGecko</div>
+        <div className="kpi">
+          <div className="kpi-label">Price</div>
+          <div className="kpi-value mono">{usd === null ? '--' : fmtMoney(usd)}</div>
+        </div>
+
+        <div className="kpi">
+          <div className="kpi-label">24H</div>
+          <div className={`kpi-value mono ${changeClass}`}>{ch === null ? '--' : fmtPct(ch)}</div>
+        </div>
+
+        <div className="kpi">
+          <div className="kpi-label">Source</div>
+          <div className="kpi-value mono">CoinGecko</div>
         </div>
       </div>
 
-      <div style={{ marginTop: 12, fontSize: 12, color: 'rgba(155,176,214,.85)' }}>
+      <div className="dim small">
         429 protection: server caches CoinGecko so UI stays stable.
       </div>
     </div>
