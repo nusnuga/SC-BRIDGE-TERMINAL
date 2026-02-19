@@ -3,11 +3,6 @@ import MarketChart from './components/MarketChart'
 import PriceTicker, { type PricesMap } from './components/PriceTicker'
 import DexScanner from './components/DexScanner'
 import { TOKENS, type TokenKey, tokenByKey } from './lib/tokenCatalog'
-import { fmtMoney } from './lib/format'
-
-type MarketChartData = {
-  prices?: [number, number][]
-}
 
 const DAYS_PRESETS = [7, 30, 90] as const
 
@@ -21,19 +16,21 @@ function useInterval(fn: () => void, ms: number) {
 }
 
 export default function App() {
+  const [navOpen, setNavOpen] = useState(false)
+
   const [activeKey, setActiveKey] = useState<TokenKey>('TNK')
   const active = useMemo(() => tokenByKey(activeKey), [activeKey])
 
   const [days, setDays] = useState<(typeof DAYS_PRESETS)[number]>(7)
   const [prices, setPrices] = useState<PricesMap | null>(null)
 
-  const [chart, setChart] = useState<MarketChartData | null>(null)
+  const [chart, setChart] = useState<any>(null)
   const [loadingChart, setLoadingChart] = useState(false)
   const [chartErr, setChartErr] = useState<string | null>(null)
 
-  const [topToast, setTopToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
 
-  const idsCsv = useMemo(() => TOKENS.map(t => t.coingeckoId).join(','), [])
+  const idsCsv = useMemo(() => TOKENS.map((t) => t.coingeckoId).join(','), [])
 
   async function loadPrices() {
     try {
@@ -42,8 +39,8 @@ export default function App() {
       if (!j.ok) throw new Error(j.error || 'price fetch failed')
       setPrices(j.data as PricesMap)
     } catch {
-      setTopToast(`Price feed delayed (retrying)…`)
-      window.setTimeout(() => setTopToast(null), 2200)
+      setToast('Price feed delayed (retrying)…')
+      window.setTimeout(() => setToast(null), 2200)
     }
   }
 
@@ -52,15 +49,17 @@ export default function App() {
     setChartErr(null)
     try {
       const r = await fetch(
-        `/api/coingecko/market_chart?id=${encodeURIComponent(active.coingeckoId)}&vs=usd&days=${encodeURIComponent(String(days))}`
+        `/api/coingecko/market_chart?id=${encodeURIComponent(active.coingeckoId)}&vs=usd&days=${encodeURIComponent(
+          String(days)
+        )}`
       )
       const j = await r.json()
       if (!j.ok) throw new Error(j.error || 'chart fetch failed')
-      setChart(j.data as MarketChartData)
 
+      setChart(j.data)
       if (j.cached === 'stale') {
-        setTopToast(`CoinGecko limited → using cached chart`)
-        window.setTimeout(() => setTopToast(null), 2400)
+        setToast('CoinGecko limited → using cached chart')
+        window.setTimeout(() => setToast(null), 2400)
       }
     } catch (e: any) {
       setChart(null)
@@ -81,149 +80,203 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active.coingeckoId, days])
 
-  const activePrice = prices?.[active.coingeckoId]?.usd ?? null
+  const activePriceUsd = prices?.[active.coingeckoId]?.usd ?? null
 
   return (
-    <div className="app">
+    <div className={`shell ${navOpen ? 'nav-open' : 'nav-closed'}`}>
+      {/* TOPBAR */}
       <div className="topbar">
-        <div className="topbarLeft">
-          <div className="logo">
-            <div className="logoMark">SC</div>
-            <div className="logoText">
-              <div className="logoTitle">SC-BRIDGE TERMINAL</div>
-              <div className="logoSub">Ops console + market telemetry for Trac Systems (Intercom)</div>
-            </div>
-          </div>
-        </div>
+        <div className="topbar-left">
+          <button
+            className="iconbtn"
+            title="Menu"
+            onClick={() => setNavOpen((v) => !v)}
+            aria-label="Toggle menu"
+          >
+            ☰
+          </button>
 
-        <div className="topbarRight">
-          <div className="chip chipLive">
-            <span className="dot dotLive" />
-            LIVE
-          </div>
-          <div className={`chip ${active.isTracTask ? 'chipTrac' : ''}`}>
-            <span className="chipK">Active</span>
-            <span className="chipV">{active.symbol}</span>
-          </div>
-          <div className="chip">
-            <span className="chipK">Price</span>
-            <span className="chipV">{activePrice ? fmtMoney(activePrice) : '--'}</span>
-          </div>
-        </div>
-      </div>
-
-      {topToast ? <div className="toast">{topToast}</div> : null}
-
-      <div className="grid">
-        <aside className="panel sidebar">
-          <div className="sectionTitle">Control</div>
-
-          <div className="card">
-            <div className="cardTitleRow">
-              <div className="cardTitle">Token Selector</div>
-              {active.isTracTask ? <div className="pill pillTrac">TRAC TASK</div> : <div className="pill">MARKET</div>}
-            </div>
-
-            <label className="label">Active Token</label>
-            <select className="select" value={activeKey} onChange={(e) => setActiveKey(e.target.value as TokenKey)}>
-              {TOKENS.map(t => {
-                const p = prices?.[t.coingeckoId]?.usd ?? null
-                const label = p ? `${t.symbol} • ${fmtMoney(p)}` : `${t.symbol}`
-                return (
-                  <option key={t.key} value={t.key}>
-                    {t.isTracTask ? `⭐ ${label}` : label}
-                  </option>
-                )
-              })}
-            </select>
-
-            <div className="hint">
-              {active.isTracTask ? (
-                <span className="good">TNK focus enabled for Trac Systems submission.</span>
-              ) : (
-                <span className="muted">Switch token to refresh chart & telemetry.</span>
-              )}
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="cardTitle">Chart Window</div>
-            <div className="segRow">
-              {DAYS_PRESETS.map(d => (
-                <button key={d} className={`seg ${days === d ? 'on' : ''}`} onClick={() => setDays(d)}>
-                  {d}D
-                </button>
+          <div className="logo-wrap">
+            <div className="logo-text">
+              {'SC-BRIDGE TERMINAL'.split('').map((ch, i) => (
+                <span key={i} className={`logo-ch ${i % 3 === 0 ? 'gradient' : ''}`}>
+                  {ch}
+                </span>
               ))}
             </div>
-            <div className="hint muted">CoinGecko chart is cached server-side to avoid rate limits.</div>
+            <div className="logo-tag">Ops console • market telemetry • Dex scanner</div>
+          </div>
+        </div>
+
+        <div className="topbar-mid">
+          <div className="statusline">
+            <span className={`pill ${active.isTracTask ? 'ok' : 'neutral'}`}>
+              <span className="pill-dot" />
+              <span className="pill-label">Mode</span>
+              <span className="pill-value">{active.isTracTask ? 'TRAC TASK' : 'MARKET'}</span>
+            </span>
+
+            <span className="pill neutral">
+              <span className="pill-dot" />
+              <span className="pill-label">Active</span>
+              <span className="pill-value">{active.symbol}</span>
+            </span>
+
+            <span className={`pill ${activePriceUsd ? 'ok' : 'idle'}`}>
+              <span className="pill-dot" />
+              <span className="pill-label">Price</span>
+              <span className="pill-value">{activePriceUsd ? `$${Number(activePriceUsd).toFixed(6)}` : '--'}</span>
+            </span>
+
+            <span className="pill idle">
+              <span className="pill-dot" />
+              <span className="pill-label">Charts</span>
+              <span className="pill-value">Cached</span>
+            </span>
           </div>
 
-          <div className="card">
-            <div className="cardTitle">Quick Checks</div>
-            <div className="kv">
-              <div className="k">API</div>
-              <div className="v">
-                <a className="link" href="/api/health" target="_blank" rel="noreferrer">
-                  /api/health
-                </a>
-              </div>
-            </div>
-            <div className="kv">
-              <div className="k">Dex Scanner</div>
-              <div className="v">Paste CA/Mint → pick pair</div>
-            </div>
+          <div className="quick">
+            <a className="btn small" href="/api/health" target="_blank" rel="noreferrer">
+              /api/health
+            </a>
+            <button className="btn small" onClick={() => loadPrices()}>
+              Refresh prices
+            </button>
           </div>
+        </div>
 
-          <div className="footer">
-            <div className="footerLine">SC-Bridge Terminal • Web-Only</div>
-            <div className="footerLine muted">CoinGecko + DexScreener telemetry</div>
-          </div>
-        </aside>
-
-        <main className="main">
-          <MarketChart token={active} days={days} data={chart} loading={loadingChart} error={chartErr} />
-          <DexScanner />
-        </main>
-
-        <section className="rail">
-          <PriceTicker active={active} prices={prices} />
-
-          <div className="panel railCard">
-            <div className="railHead">
-              <div className="railTitle">Bridge Status</div>
-              <div className="pill">OPS</div>
-            </div>
-
-            <div className="statusGrid">
-              <div className="statusItem">
-                <div className="statusK">Mode</div>
-                <div className="statusV">Web Telemetry</div>
-              </div>
-              <div className="statusItem">
-                <div className="statusK">Charts</div>
-                <div className="statusV">CoinGecko (cached)</div>
-              </div>
-              <div className="statusItem">
-                <div className="statusK">DEX</div>
-                <div className="statusV">DexScreener (live polling)</div>
-              </div>
-              <div className="statusItem">
-                <div className="statusK">Focus</div>
-                <div className="statusV">{active.isTracTask ? 'TNK / Trac Network' : 'Market baseline'}</div>
-              </div>
-            </div>
-
-            <div className="divider" />
-
-            <div className="note">
-              <div className="noteH">429 protection</div>
-              <div className="noteB">
-                If CoinGecko rate-limits, the server auto-serves cached data so the UI stays stable.
-              </div>
-            </div>
-          </div>
-        </section>
+        <div className="topbar-right">
+          <span className="tag">localhost</span>
+          <span className="tag">5173</span>
+        </div>
       </div>
+
+      {/* NAV */}
+      <aside className="nav">
+        <div className="nav-inner">
+          <button className="navbtn active" onClick={() => setNavOpen(false)}>
+            <span>Dashboard</span>
+            <span className="badge">LIVE</span>
+          </button>
+
+          <button className="navbtn" onClick={() => setNavOpen(false)}>
+            <span>Dex Scanner</span>
+            <span className="badge">DEX</span>
+          </button>
+
+          <button className="navbtn" onClick={() => setNavOpen(false)}>
+            <span>Telemetry</span>
+            <span className="badge">CG</span>
+          </button>
+
+          <div style={{ height: 8 }} />
+
+          <div className="alert">
+            <strong className="mono">429 protection</strong>
+            <div className="dim" style={{ marginTop: 6 }}>
+              If CoinGecko rate-limits, the server serves cached data so the UI stays stable.
+            </div>
+          </div>
+
+          <div className="alert" style={{ marginTop: 8 }}>
+            <div className="mono">Focus</div>
+            <div className="dim" style={{ marginTop: 6 }}>
+              {active.isTracTask ? 'TNK / Trac Network' : 'Market baseline'}
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* MAIN */}
+      <main className="main">
+        <div className="grid2">
+          {/* LEFT COLUMN */}
+          <section className="panel">
+            <div className="panel-hd">
+              <h2>Control</h2>
+              <span className="chip hi">{active.isTracTask ? 'TRAC TASK' : 'MARKET'}</span>
+            </div>
+
+            <div className="panel-bd">
+              {toast ? <div className="toastbar">{toast}</div> : null}
+
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono muted">Token Selector</span>
+                  <span className="chip">{active.isTracTask ? '⭐ pinned' : 'free'}</span>
+                </div>
+
+                <div className="row">
+                  <select
+                    className="select"
+                    value={activeKey}
+                    onChange={(e) => setActiveKey(e.target.value as TokenKey)}
+                  >
+                    {TOKENS.map((t) => (
+                      <option key={t.key} value={t.key}>
+                        {t.isTracTask ? `⭐ ${t.symbol}` : t.symbol} • {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="dim small">
+                  {active.isTracTask ? 'TNK focus enabled for Trac Systems submission.' : 'Switch token to refresh chart & telemetry.'}
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-hd">
+                  <span className="mono muted">Chart Window</span>
+                  <span className="chip">{days}D</span>
+                </div>
+
+                <div className="row">
+                  {DAYS_PRESETS.map((d) => (
+                    <button
+                      key={d}
+                      className={`btn small ${days === d ? 'primary' : ''}`}
+                      onClick={() => setDays(d)}
+                    >
+                      {d}D
+                    </button>
+                  ))}
+                  <button className="btn small" onClick={() => loadChart()}>
+                    Reload chart
+                  </button>
+                </div>
+
+                <div className="dim small">CoinGecko chart is cached server-side to avoid rate limits.</div>
+              </div>
+
+              <PriceTicker active={active} prices={prices} />
+            </div>
+          </section>
+
+          {/* RIGHT COLUMN */}
+          <section className="panel">
+            <div className="panel-hd">
+              <h2>CoinGecko Chart</h2>
+              <span className="chip">{active.symbol}</span>
+            </div>
+
+            <div className="panel-bd" style={{ padding: 10 }}>
+              <MarketChart token={active} days={days} data={chart} loading={loadingChart} error={chartErr} />
+            </div>
+          </section>
+
+          {/* FULL WIDTH */}
+          <section className="panel" style={{ gridColumn: 'span 2' }}>
+            <div className="panel-hd">
+              <h2>DexScreener CA Scanner</h2>
+              <span className="chip warn">live polling</span>
+            </div>
+            <div className="panel-bd">
+              <DexScanner />
+            </div>
+          </section>
+        </div>
+      </main>
     </div>
   )
 }
