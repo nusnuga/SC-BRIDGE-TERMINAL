@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import './app.css'
+
 import MarketChart from './components/MarketChart'
 import PriceTicker, { type PricesMap } from './components/PriceTicker'
 import DexScanner from './components/DexScanner'
@@ -87,12 +89,7 @@ export default function App() {
       {/* TOPBAR */}
       <div className="topbar">
         <div className="topbar-left">
-          <button
-            className="iconbtn"
-            title="Menu"
-            onClick={() => setNavOpen((v) => !v)}
-            aria-label="Toggle menu"
-          >
+          <button className="iconbtn" title="Menu" onClick={() => setNavOpen((v) => !v)} aria-label="Toggle menu">
             ☰
           </button>
 
@@ -207,11 +204,7 @@ export default function App() {
                 </div>
 
                 <div className="row">
-                  <select
-                    className="select"
-                    value={activeKey}
-                    onChange={(e) => setActiveKey(e.target.value as TokenKey)}
-                  >
+                  <select className="select" value={activeKey} onChange={(e) => setActiveKey(e.target.value as TokenKey)}>
                     {TOKENS.map((t) => (
                       <option key={t.key} value={t.key}>
                         {t.isTracTask ? `⭐ ${t.symbol}` : t.symbol} • {t.name}
@@ -221,7 +214,9 @@ export default function App() {
                 </div>
 
                 <div className="dim small">
-                  {active.isTracTask ? 'TNK focus enabled for Trac Systems submission.' : 'Switch token to refresh chart & telemetry.'}
+                  {active.isTracTask
+                    ? 'TNK focus enabled for Trac Systems submission.'
+                    : 'Switch token to refresh chart & telemetry.'}
                 </div>
               </div>
 
@@ -233,11 +228,7 @@ export default function App() {
 
                 <div className="row">
                   {DAYS_PRESETS.map((d) => (
-                    <button
-                      key={d}
-                      className={`btn small ${days === d ? 'primary' : ''}`}
-                      onClick={() => setDays(d)}
-                    >
+                    <button key={d} className={`btn small ${days === d ? 'primary' : ''}`} onClick={() => setDays(d)}>
                       {d}D
                     </button>
                   ))}
